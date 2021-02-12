@@ -4,9 +4,9 @@
  */
 #include "extapi.h"
 #include "service.h"
+#include "common_metapi.h"
 
-#ifdef _WIN32
-#include <Sddl.h>
+#include <sddl.h>
 
 /*! @brief The possible list of operations to perform on a service */
 typedef enum _ServiceOperation
@@ -93,7 +93,6 @@ DWORD query_service(LPCSTR cpServiceName, Packet *pResponse);
 DWORD get_service_config(SC_HANDLE scService, Packet *pResponse);
 DWORD get_service_status(SC_HANDLE scService, Packet *pResponse);
 DWORD get_service_dacl(SC_HANDLE scService, Packet *pResponse);
-#endif
 
 DWORD execute_service_task(LPCSTR lpServiceName, ServiceOperation eServiceOp, Packet *response);
 DWORD enumerate_services(Packet *response);
@@ -191,7 +190,7 @@ DWORD request_service_control(Remote *remote, Packet *packet)
 	LPSTR lpServiceName = NULL;
 	ServiceOperation eServiceOp = 0;
 	DWORD dwResult = ERROR_SUCCESS;
-	Packet * response = packet_create_response(packet);
+	Packet * response = met_api->packet.create_response(packet);
 
 	do
 	{
@@ -202,13 +201,13 @@ DWORD request_service_control(Remote *remote, Packet *packet)
 			break;
 		}
 
-		lpServiceName = packet_get_tlv_value_string(packet, TLV_TYPE_EXT_SERVICE_CTRL_NAME);
+		lpServiceName = met_api->packet.get_tlv_value_string(packet, TLV_TYPE_EXT_SERVICE_CTRL_NAME);
 		if (!lpServiceName)
 		{
 			BREAK_WITH_ERROR("[EXTAPI SERVICE] Missing service name parameter", ERROR_INVALID_PARAMETER);
 		}
 
-		eServiceOp = (ServiceOperation)packet_get_tlv_value_uint(packet, TLV_TYPE_EXT_SERVICE_CTRL_OP);
+		eServiceOp = (ServiceOperation)met_api->packet.get_tlv_value_uint(packet, TLV_TYPE_EXT_SERVICE_CTRL_OP);
 		if (eServiceOp == 0)
 		{
 			BREAK_WITH_ERROR("[EXTAPI SERVICE] Missing service operation parameter", ERROR_INVALID_PARAMETER);
@@ -222,7 +221,7 @@ DWORD request_service_control(Remote *remote, Packet *packet)
 	dprintf("[EXTAPI SERVICE] Transmitting response back to caller.");
 	if (response)
 	{
-		packet_transmit_response(dwResult, remote, response);
+		met_api->packet.transmit_response(dwResult, remote, response);
 	}
 
 	return dwResult;
@@ -237,7 +236,7 @@ DWORD request_service_control(Remote *remote, Packet *packet)
 DWORD request_service_enum(Remote *remote, Packet *packet)
 {
 	DWORD dwResult = ERROR_SUCCESS;
-	Packet * response = packet_create_response(packet);
+	Packet * response = met_api->packet.create_response(packet);
 
 	do
 	{
@@ -256,7 +255,7 @@ DWORD request_service_enum(Remote *remote, Packet *packet)
 	dprintf("[EXTAPI SERVICE] Transmitting response back to caller.");
 	if (response)
 	{
-		packet_transmit_response(dwResult, remote, response);
+		met_api->packet.transmit_response(dwResult, remote, response);
 	}
 
 	return dwResult;
@@ -276,7 +275,7 @@ DWORD request_service_query(Remote *remote, Packet *packet)
 {
 	LPSTR lpServiceName = NULL;
 	DWORD dwResult = ERROR_SUCCESS;
-	Packet * response = packet_create_response(packet);
+	Packet * response = met_api->packet.create_response(packet);
 
 	do
 	{
@@ -287,7 +286,7 @@ DWORD request_service_query(Remote *remote, Packet *packet)
 			break;
 		}
 
-		lpServiceName = packet_get_tlv_value_string(packet, TLV_TYPE_EXT_SERVICE_ENUM_NAME);
+		lpServiceName = met_api->packet.get_tlv_value_string(packet, TLV_TYPE_EXT_SERVICE_ENUM_NAME);
 		if (!lpServiceName)
 		{
 			BREAK_WITH_ERROR("[EXTAPI SERVICE] Missing service name parameter", ERROR_INVALID_PARAMETER);
@@ -301,7 +300,7 @@ DWORD request_service_query(Remote *remote, Packet *packet)
 	dprintf("[EXTAPI SERVICE] Transmitting response back to caller.");
 	if (response)
 	{
-		packet_transmit_response(dwResult, remote, response);
+		met_api->packet.transmit_response(dwResult, remote, response);
 	}
 
 	return dwResult;
@@ -316,8 +315,6 @@ DWORD request_service_query(Remote *remote, Packet *packet)
  */
 DWORD query_service(LPCSTR cpServiceName, Packet *pResponse)
 {
-#ifdef _WIN32
-	// currently we only support Windoze
 	DWORD dwResult = ERROR_SUCCESS;
 	SC_HANDLE scManager = NULL;
 	SC_HANDLE scService = NULL;
@@ -363,9 +360,6 @@ DWORD query_service(LPCSTR cpServiceName, Packet *pResponse)
 	}
 
 	return dwResult;
-#else
-	return ERROR_NOT_SUPPORTED;
-#endif
 }
 
 /*!
@@ -376,9 +370,6 @@ DWORD query_service(LPCSTR cpServiceName, Packet *pResponse)
  */
 DWORD enumerate_services(Packet *pResponse)
 {
-#ifdef _WIN32
-	// currently we only support Windoze
-
 	DWORD dwResult = ERROR_SUCCESS;
 	SC_HANDLE scManager = NULL;
 	ENUM_SERVICE_STATUS_PROCESSA* pSsInfo = NULL;
@@ -448,9 +439,6 @@ DWORD enumerate_services(Packet *pResponse)
 	}
 
 	return dwResult;
-#else
-	return ERROR_NOT_SUPPORTED;
-#endif
 }
 
 /*!
@@ -463,8 +451,6 @@ DWORD enumerate_services(Packet *pResponse)
  */
 DWORD execute_service_task(LPCSTR cpServiceName, ServiceOperation eServiceOp, Packet *pResponse)
 {
-#ifdef _WIN32
-	// currently we only support Windoze
 	DWORD dwResult = ERROR_SUCCESS;
 	DWORD dwOpenFlags = SC_MANAGER_CONNECT | GENERIC_READ | SERVICE_QUERY_STATUS;
 	DWORD dwControlFlag = 0;
@@ -607,12 +593,8 @@ DWORD execute_service_task(LPCSTR cpServiceName, ServiceOperation eServiceOp, Pa
 	}
 
 	return dwResult;
-#else
-	return ERROR_NOT_SUPPORTED;
-#endif
 }
 
-#ifdef _WIN32
 /*!
  * @brief Add an enumeration result to the given response packet.
  * @param pRacket Pointer to the response \c Packet.
@@ -624,15 +606,15 @@ DWORD execute_service_task(LPCSTR cpServiceName, ServiceOperation eServiceOp, Pa
  */
 VOID add_enumerated_service(Packet *pResponse, LPCSTR cpName, LPCSTR cpDisplayName, DWORD dwProcessId, DWORD dwStatus, BOOL bInteractive)
 {
-	Packet* pGroup = packet_create_group();
+	Packet* pGroup = met_api->packet.create_group();
 
-	packet_add_tlv_string(pGroup, TLV_TYPE_EXT_SERVICE_ENUM_NAME, cpName);
-	packet_add_tlv_string(pGroup, TLV_TYPE_EXT_SERVICE_ENUM_DISPLAYNAME, cpDisplayName);
-	packet_add_tlv_uint(pGroup, TLV_TYPE_EXT_SERVICE_ENUM_PID, dwProcessId);
-	packet_add_tlv_uint(pGroup, TLV_TYPE_EXT_SERVICE_ENUM_STATUS, dwStatus);
-	packet_add_tlv_bool(pGroup, TLV_TYPE_EXT_SERVICE_ENUM_INTERACTIVE, bInteractive);
+	met_api->packet.add_tlv_string(pGroup, TLV_TYPE_EXT_SERVICE_ENUM_NAME, cpName);
+	met_api->packet.add_tlv_string(pGroup, TLV_TYPE_EXT_SERVICE_ENUM_DISPLAYNAME, cpDisplayName);
+	met_api->packet.add_tlv_uint(pGroup, TLV_TYPE_EXT_SERVICE_ENUM_PID, dwProcessId);
+	met_api->packet.add_tlv_uint(pGroup, TLV_TYPE_EXT_SERVICE_ENUM_STATUS, dwStatus);
+	met_api->packet.add_tlv_bool(pGroup, TLV_TYPE_EXT_SERVICE_ENUM_INTERACTIVE, bInteractive);
 
-	packet_add_group(pResponse, TLV_TYPE_EXT_SERVICE_ENUM_GROUP, pGroup);
+	met_api->packet.add_group(pResponse, TLV_TYPE_EXT_SERVICE_ENUM_GROUP, pGroup);
 }
 
 /*!
@@ -677,12 +659,12 @@ DWORD get_service_config(SC_HANDLE scService, Packet *pResponse)
 		}
 
 		dprintf("[EXTAPI SERVICE] Start type: %u", lpServiceConfig->dwStartType);
-		packet_add_tlv_uint(pResponse, TLV_TYPE_EXT_SERVICE_QUERY_STARTTYPE, lpServiceConfig->dwStartType);
-		packet_add_tlv_string(pResponse, TLV_TYPE_EXT_SERVICE_QUERY_DISPLAYNAME, lpServiceConfig->lpDisplayName);
-		packet_add_tlv_string(pResponse, TLV_TYPE_EXT_SERVICE_QUERY_STARTNAME, lpServiceConfig->lpServiceStartName);
-		packet_add_tlv_string(pResponse, TLV_TYPE_EXT_SERVICE_QUERY_PATH, lpServiceConfig->lpBinaryPathName);
-		packet_add_tlv_string(pResponse, TLV_TYPE_EXT_SERVICE_QUERY_LOADORDERGROUP, lpServiceConfig->lpLoadOrderGroup ? lpServiceConfig->lpLoadOrderGroup : "");
-		packet_add_tlv_bool(pResponse, TLV_TYPE_EXT_SERVICE_QUERY_INTERACTIVE, lpServiceConfig->dwServiceType & SERVICE_INTERACTIVE_PROCESS);
+		met_api->packet.add_tlv_uint(pResponse, TLV_TYPE_EXT_SERVICE_QUERY_STARTTYPE, lpServiceConfig->dwStartType);
+		met_api->packet.add_tlv_string(pResponse, TLV_TYPE_EXT_SERVICE_QUERY_DISPLAYNAME, lpServiceConfig->lpDisplayName);
+		met_api->packet.add_tlv_string(pResponse, TLV_TYPE_EXT_SERVICE_QUERY_STARTNAME, lpServiceConfig->lpServiceStartName);
+		met_api->packet.add_tlv_string(pResponse, TLV_TYPE_EXT_SERVICE_QUERY_PATH, lpServiceConfig->lpBinaryPathName);
+		met_api->packet.add_tlv_string(pResponse, TLV_TYPE_EXT_SERVICE_QUERY_LOADORDERGROUP, lpServiceConfig->lpLoadOrderGroup ? lpServiceConfig->lpLoadOrderGroup : "");
+		met_api->packet.add_tlv_bool(pResponse, TLV_TYPE_EXT_SERVICE_QUERY_INTERACTIVE, lpServiceConfig->dwServiceType & SERVICE_INTERACTIVE_PROCESS);
 
 	} while (0);
 
@@ -722,7 +704,7 @@ DWORD get_service_status(SC_HANDLE scService, Packet *pResponse)
 			break;
 		}
 
-		packet_add_tlv_uint(pResponse, TLV_TYPE_EXT_SERVICE_QUERY_STATUS, serviceStatus.dwCurrentState);
+		met_api->packet.add_tlv_uint(pResponse, TLV_TYPE_EXT_SERVICE_QUERY_STATUS, serviceStatus.dwCurrentState);
 
 	} while (0);
 
@@ -776,7 +758,7 @@ DWORD get_service_dacl(SC_HANDLE scService, Packet *pResponse)
 			BREAK_ON_ERROR("[EXTAPI SERVICE] Unable to get DACL string");
 		}
 
-		packet_add_tlv_string(pResponse, TLV_TYPE_EXT_SERVICE_QUERY_DACL, lpDaclString);
+		met_api->packet.add_tlv_string(pResponse, TLV_TYPE_EXT_SERVICE_QUERY_DACL, lpDaclString);
 
 	} while (0);
 
@@ -792,4 +774,3 @@ DWORD get_service_dacl(SC_HANDLE scService, Packet *pResponse)
 
 	return dwResult;
 }
-#endif

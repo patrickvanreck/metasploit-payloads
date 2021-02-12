@@ -3,6 +3,7 @@
  * @brief Definitions for functionality that handles TCP client operations.
  */
 #include "precomp.h"
+#include "common_metapi.h"
 #include "tcp.h"
 
 /*!
@@ -119,7 +120,7 @@ DWORD tcp_channel_client_close(Channel *channel, Packet *request, LPVOID context
 		free_tcp_client_context(ctx);
 
 		// Set the native channel operations context to NULL
-		channel_set_native_io_context(channel, NULL);
+		met_api->channel.set_native_io_context(channel, NULL);
 	}
 
 	return ERROR_SUCCESS;
@@ -187,7 +188,7 @@ DWORD tcp_channel_client_local_notify(Remote * remote, TcpClientContext * ctx)
 			dprintf("[TCP] tcp_channel_client_local_notify. [closed] channel=0x%08X read=0x%.8x", ctx->channel, dwBytesRead);
 
 			// Set the native channel operations context to NULL
-			channel_set_native_io_context(ctx->channel, NULL);
+			met_api->channel.set_native_io_context(ctx->channel, NULL);
 
 			// Sleep for a quarter second
 			Sleep(250);
@@ -203,7 +204,7 @@ DWORD tcp_channel_client_local_notify(Remote * remote, TcpClientContext * ctx)
 			if (ctx->channel)
 			{
 				dprintf("[TCP] tcp_channel_client_local_notify. [data] channel=0x%08X read=%d", ctx->channel, dwBytesRead);
-				channel_write(ctx->channel, ctx->remote, NULL, 0, buf, dwBytesRead, 0);
+				met_api->channel.write(ctx->channel, ctx->remote, NULL, 0, buf, dwBytesRead, 0);
 			}
 			else
 			{
@@ -229,7 +230,8 @@ DWORD tcp_channel_client_local_notify(Remote * remote, TcpClientContext * ctx)
 DWORD request_net_tcp_client_channel_open(Remote *remote, Packet *packet)
 {
 	Channel *channel = NULL;
-	Packet *response = packet_create_response(packet);
+	TcpClientContext *ctx = NULL;
+	Packet *response = met_api->packet.create_response(packet);
 	DWORD result = ERROR_SUCCESS;
 	LPCSTR host;
 	DWORD port;
@@ -243,22 +245,23 @@ DWORD request_net_tcp_client_channel_open(Remote *remote, Packet *packet)
 		}
 
 		// Extract the hostname and port that we are to connect to
-		host = packet_get_tlv_value_string(packet, TLV_TYPE_PEER_HOST);
-		port = packet_get_tlv_value_uint(packet, TLV_TYPE_PEER_PORT);
+		host = met_api->packet.get_tlv_value_string(packet, TLV_TYPE_PEER_HOST);
+		port = met_api->packet.get_tlv_value_uint(packet, TLV_TYPE_PEER_PORT);
 
 		// Open the TCP channel
-		if ((result = create_tcp_client_channel(remote, host, (USHORT)(port & 0xffff), &channel)) != ERROR_SUCCESS)
+		if ((result = create_tcp_client_channel(remote, host, (USHORT)(port & 0xffff), &channel, &ctx)) != ERROR_SUCCESS)
 		{
 			break;
 		}
 
 		// Set the channel's identifier on the response
-		packet_add_tlv_uint(response, TLV_TYPE_CHANNEL_ID, channel_get_id(channel));
+		met_api->packet.add_tlv_uint(response, TLV_TYPE_CHANNEL_ID, met_api->channel.get_id(channel));
+		net_tlv_pack_local_addrinfo(ctx, response);
 
 	} while (0);
 
 	// Transmit the response
-	packet_transmit_response(result, remote, response);
+	met_api->packet.transmit_response(result, remote, response);
 
 	return ERROR_SUCCESS;
 }
@@ -269,10 +272,11 @@ DWORD request_net_tcp_client_channel_open(Remote *remote, Packet *packet)
  * @param remoteHost The remote host to connect to.
  * @param remoteHost The remote port to connect to.
  * @param outChannel Pointer that will receive the newly created channel.
+ * @param outContext Pointer that will receive the newly created tcp client context.
  * @returns Indication of success or failure.
  * @retval ERROR_SUCCESS Creation of the TCP client was successful.
  */
-DWORD create_tcp_client_channel(Remote *remote, LPCSTR remoteHost, USHORT remotePort, Channel **outChannel)
+DWORD create_tcp_client_channel(Remote *remote, LPCSTR remoteHost, USHORT remotePort, Channel **outChannel, TcpClientContext **outContext)
 {
 	StreamChannelOps chops;
 	TcpClientContext *ctx = NULL;
@@ -284,6 +288,10 @@ DWORD create_tcp_client_channel(Remote *remote, LPCSTR remoteHost, USHORT remote
 	if (outChannel)
 	{
 		*outChannel = NULL;
+	}
+	if (outContext)
+	{
+		*outContext = NULL;
 	}
 
 	dprintf("[TCP] create_tcp_client_channel. host=%s, port=%d", remoteHost, remotePort);
@@ -320,11 +328,7 @@ DWORD create_tcp_client_channel(Remote *remote, LPCSTR remoteHost, USHORT remote
 		// Try to connect to the host/port
 		if (connect(clientFd, (struct sockaddr *)&s, sizeof(s)) == SOCKET_ERROR)
 		{
-#ifdef _WIN32
 			result = WSAGetLastError();
-#else
-			result = errno;
-#endif
 			dprintf("[TCP] create client failed host=%s, port=%d error=%u 0x%x", remoteHost, remotePort, result, result);
 			break;
 		}
@@ -352,7 +356,7 @@ DWORD create_tcp_client_channel(Remote *remote, LPCSTR remoteHost, USHORT remote
 
 		dprintf("[TCP] create_tcp_client_channel. host=%s, port=%d creating the channel", remoteHost, remotePort);
 		// Allocate an uninitialized channel for associated with this connection
-		if (!(channel = channel_create_stream(0, 0, &chops)))
+		if (!(channel = met_api->channel.create_stream(0, 0, &chops)))
 		{
 			result = ERROR_NOT_ENOUGH_MEMORY;
 			break;
@@ -361,7 +365,7 @@ DWORD create_tcp_client_channel(Remote *remote, LPCSTR remoteHost, USHORT remote
 		// Save the channel context association
 		ctx->channel = channel;
 
-		// Finally, create a waitable event and insert it into the scheduler's 
+		// Finally, create a waitable event and insert it into the scheduler's
 		// waitable list
 		dprintf("[TCP] create_tcp_client_channel. host=%s, port=%d creating the notify", remoteHost, remotePort);
 		if ((ctx->notify = WSACreateEvent()))
@@ -369,7 +373,7 @@ DWORD create_tcp_client_channel(Remote *remote, LPCSTR remoteHost, USHORT remote
 			WSAEventSelect(ctx->fd, ctx->notify, FD_READ | FD_CLOSE);
 			dprintf("[TCP] create_tcp_client_channel. host=%s, port=%d created the notify %.8x", remoteHost, remotePort, ctx->notify);
 
-			scheduler_insert_waitable(ctx->notify, ctx, NULL, (WaitableNotifyRoutine)tcp_channel_client_local_notify, NULL);
+			met_api->scheduler.insert_waitable(ctx->notify, ctx, NULL, (WaitableNotifyRoutine)tcp_channel_client_local_notify, NULL);
 		}
 
 	} while (0);
@@ -383,6 +387,7 @@ DWORD create_tcp_client_channel(Remote *remote, LPCSTR remoteHost, USHORT remote
 		if (ctx)
 		{
 			free_tcp_client_context(ctx);
+			ctx = NULL;
 		}
 
 		if (clientFd)
@@ -396,6 +401,10 @@ DWORD create_tcp_client_channel(Remote *remote, LPCSTR remoteHost, USHORT remote
 	if (outChannel)
 	{
 		*outChannel = channel;
+	}
+	if (outContext)
+	{
+		*outContext = ctx;
 	}
 
 	return result;
@@ -418,7 +427,7 @@ VOID free_socket_context(SocketContext *ctx)
 
 	if (ctx->channel)
 	{
-		channel_close(ctx->channel, ctx->remote, NULL, 0, NULL);
+		met_api->channel.close(ctx->channel, ctx->remote, NULL, 0, NULL);
 		ctx->channel = NULL;
 	}
 
@@ -426,7 +435,7 @@ VOID free_socket_context(SocketContext *ctx)
 	{
 		dprintf("[TCP] free_socket_context. remove_waitable ctx=0x%08X notify=0x%08X", ctx, ctx->notify);
 		// The scheduler calls CloseHandle on our WSACreateEvent() for us
-		scheduler_signal_waitable(ctx->notify, Stop);
+		met_api->scheduler.signal_waitable(ctx->notify, SchedulerStop);
 		ctx->notify = NULL;
 	}
 
@@ -454,24 +463,24 @@ DWORD request_net_socket_tcp_shutdown(Remote *remote, Packet *packet)
 	do
 	{
 		dprintf("[TCP] entering request_net_socket_tcp_shutdown");
-		response = packet_create_response(packet);
+		response = met_api->packet.create_response(packet);
 		if (!response)
 		{
 			BREAK_WITH_ERROR("[TCP] request_net_socket_tcp_shutdown. response == NULL", ERROR_NOT_ENOUGH_MEMORY);
 		}
 
-		cid = packet_get_tlv_value_uint(packet, TLV_TYPE_CHANNEL_ID);
-		how = packet_get_tlv_value_uint(packet, TLV_TYPE_SHUTDOWN_HOW);
+		cid = met_api->packet.get_tlv_value_uint(packet, TLV_TYPE_CHANNEL_ID);
+		how = met_api->packet.get_tlv_value_uint(packet, TLV_TYPE_SHUTDOWN_HOW);
 
-		channel = channel_find_by_id(cid);
-		if (!response)
+		channel = met_api->channel.find_by_id(cid);
+		if (!channel)
 		{
 			BREAK_WITH_ERROR("[TCP] request_net_socket_tcp_shutdown. channel == NULL", ERROR_INVALID_HANDLE);
 		}
 
 		dprintf("[TCP] request_net_socket_tcp_shutdown. channel=0x%08X, cid=%d", channel, cid);
 
-		ctx = channel_get_native_io_context(channel);
+		ctx = met_api->channel.get_native_io_context(channel);
 		if (!ctx)
 		{
 			BREAK_WITH_ERROR("[TCP] request_net_socket_tcp_shutdown. ctx == NULL", ERROR_INVALID_HANDLE);
@@ -482,15 +491,15 @@ DWORD request_net_socket_tcp_shutdown(Remote *remote, Packet *packet)
 			BREAK_ON_WSAERROR("[TCP] request_net_socket_tcp_shutdown. shutdown failed");
 		}
 
-		// sf: we dont seem to need to call this here, as the channels tcp_channel_client_local_notify() will 
-		// catch the socket closure and call free_socket_context() for us, due the the FD_READ|FD_CLOSE flags 
+		// sf: we dont seem to need to call this here, as the channels tcp_channel_client_local_notify() will
+		// catch the socket closure and call free_socket_context() for us, due the the FD_READ|FD_CLOSE flags
 		// being passed to WSAEventSelect for the notify event in create_tcp_client_channel().
 		// This avoids a double call (from two different threads) and subsequent access violation in some edge cases.
 		//free_socket_context( ctx );
 
 	} while (0);
 
-	packet_transmit_response(dwResult, remote, response);
+	met_api->packet.transmit_response(dwResult, remote, response);
 
 	dprintf("[TCP] leaving request_net_socket_tcp_shutdown");
 

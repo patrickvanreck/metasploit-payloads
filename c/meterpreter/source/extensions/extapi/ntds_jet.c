@@ -3,15 +3,35 @@
 * @brief Definitions for NTDS Jet Engine functions
 */
 #include "extapi.h"
-
-#define JET_VERSION 0x0501
+#include "common_metapi.h"
 
 #include <inttypes.h>
-#include <WinCrypt.h>
+#include <wincrypt.h>
 #include "syskey.h"
 #include "ntds_decrypt.h"
 #include "ntds_jet.h"
 #include "ntds.h"
+
+#ifdef __MINGW32__
+typedef JET_ERR (JET_API*PJetGetTableColumnInfo)(JET_SESID sesid, JET_TABLEID tableid, const char* szColumnName, void* pvResult, unsigned long cbMax, unsigned long InfoLevel);
+#endif
+
+JET_ERR JET_API InternalJetGetTableColumnInfo(JET_SESID sesid, JET_TABLEID tableid, const char* szColumnName, void* pvResult, unsigned long cbMax, unsigned long InfoLevel)
+{
+#ifdef __MINGW32__
+	// This function does exist in the x64 version of mingw's compiler.
+	// Doesn't live in the x86 version, and I have no idea why. So add
+	// a dynamic invocation to cover for it at runtime.
+	static PJetGetTableColumnInfo pFunc = NULL;
+	if (pFunc == NULL)
+	{
+		pFunc = (PJetGetTableColumnInfo)GetProcAddress(LoadLibraryA("esent.dll"), "JetGetTableColumnInfo");
+	}
+	return pFunc(sesid, tableid, szColumnName, pvResult, cbMax, InfoLevel);
+#else
+	return JetGetTableColumnInfo(sesid, tableid, szColumnName, pvResult, cbMax, InfoLevel);
+#endif
+}
 
 /*!
 * @brief Shuts down the Jet Instance and frees the jetState struct.
@@ -21,7 +41,7 @@
 JET_ERR engine_shutdown(struct jetState *ntdsState)
 {
 	JET_ERR shutdownStatus;
-	shutdownStatus = JetCloseDatabase(ntdsState->jetSession, ntdsState->jetDatabase, (JET_GRBIT)NULL);
+	shutdownStatus = JetCloseDatabase(ntdsState->jetSession, ntdsState->jetDatabase, (JET_GRBIT)0);
 	if (shutdownStatus != JET_errSuccess) {
 		return shutdownStatus;
 	}
@@ -29,7 +49,7 @@ JET_ERR engine_shutdown(struct jetState *ntdsState)
 	if (shutdownStatus != JET_errSuccess) {
 		return shutdownStatus;
 	}
-	shutdownStatus = JetEndSession(ntdsState->jetSession, (JET_GRBIT)NULL);
+	shutdownStatus = JetEndSession(ntdsState->jetSession, (JET_GRBIT)0);
 	if (shutdownStatus != JET_errSuccess) {
 		return shutdownStatus;
 	}
@@ -93,7 +113,7 @@ void get_instance_name(char *name)
 JET_ERR find_first(struct jetState *ntdsState)
 {
 	JET_ERR cursorStatus;
-	cursorStatus = JetMove(ntdsState->jetSession, ntdsState->jetTable, JET_MoveFirst, (JET_GRBIT)NULL);
+	cursorStatus = JetMove(ntdsState->jetSession, ntdsState->jetTable, JET_MoveFirst, (JET_GRBIT)0);
 	return cursorStatus;
 }
 
@@ -127,7 +147,7 @@ JET_ERR get_column_info(struct jetState *ntdsState, struct ntdsColumns *accountC
 	};
 	int countColumns = sizeof(columns) / sizeof(columns[0]);
 	for (int i = 0; i < countColumns; i++) {
-		columnError = JetGetTableColumnInfo(ntdsState->jetSession, ntdsState->jetTable, columns[i].name, columns[i].column, sizeof(JET_COLUMNDEF), JET_ColInfo);
+		columnError = InternalJetGetTableColumnInfo(ntdsState->jetSession, ntdsState->jetTable, columns[i].name, columns[i].column, sizeof(JET_COLUMNDEF), JET_ColInfo);
 		if (columnError != JET_errSuccess) {
 			return columnError;
 		}
@@ -148,7 +168,7 @@ JET_ERR get_PEK(struct jetState *ntdsState, struct ntdsColumns *accountColumns, 
 	JET_ERR readStatus;
 	unsigned char *encryptionKey[76];
 
-	cursorStatus = JetMove(ntdsState->jetSession, ntdsState->jetTable, JET_MoveFirst, (JET_GRBIT)NULL);
+	cursorStatus = JetMove(ntdsState->jetSession, ntdsState->jetTable, JET_MoveFirst, (JET_GRBIT)0);
 	if (cursorStatus != JET_errSuccess) {
 		return cursorStatus;
 	}
@@ -160,7 +180,7 @@ JET_ERR get_PEK(struct jetState *ntdsState, struct ntdsColumns *accountColumns, 
 			memcpy(pekEncrypted, &encryptionKey, 76);
 			return readStatus;
 		}
-		cursorStatus = JetMove(ntdsState->jetSession, ntdsState->jetTable, JET_MoveNext, (JET_GRBIT)NULL);
+		cursorStatus = JetMove(ntdsState->jetSession, ntdsState->jetTable, JET_MoveNext, (JET_GRBIT)0);
 	} while (cursorStatus == JET_errSuccess);
 	return readStatus;
 }
@@ -179,7 +199,7 @@ JET_ERR next_user(struct jetState *ntdsState, struct ntdsColumns *accountColumns
 	DWORD accountType = 0;
 	unsigned long columnSize = 0;
 	do {
-		cursorStatus = JetMove(ntdsState->jetSession, ntdsState->jetTable, JET_MoveNext, (JET_GRBIT)NULL);
+		cursorStatus = JetMove(ntdsState->jetSession, ntdsState->jetTable, JET_MoveNext, (JET_GRBIT)0);
 		if (cursorStatus != JET_errSuccess) {
 			finalStatus = cursorStatus;
 			break;
@@ -246,7 +266,7 @@ JET_ERR read_user(struct jetState *ntdsState, struct ntdsColumns *accountColumns
 		return readStatus;
 	}
 
-	char *accountNameStr = wchar_to_utf8(accountName);
+	char *accountNameStr = met_api->string.wchar_to_utf8(accountName);
 	if (accountNameStr) {
 		strncpy_s(userAccount->accountName, ACCOUNT_NAME_SIZE, accountNameStr, ACCOUNT_NAME_SIZE - 1);
 		free(accountNameStr);
@@ -262,7 +282,7 @@ JET_ERR read_user(struct jetState *ntdsState, struct ntdsColumns *accountColumns
 		return readStatus;
 	}
 
-	char *accountDescriptionStr = wchar_to_utf8(accountDescription);
+	char *accountDescriptionStr = met_api->string.wchar_to_utf8(accountDescription);
 	if (accountDescriptionStr) {
 		strncpy_s(userAccount->accountDescription, ACCOUNT_DESC_SIZE, accountDescriptionStr, ACCOUNT_DESC_SIZE - 1);
 		free(accountDescriptionStr);

@@ -1,12 +1,10 @@
 #include "precomp.h"
+#include "common_metapi.h"
 
-#ifdef _WIN32
 #include <iptypes.h>
 #include <ws2ipdef.h>
-#endif
 
-#ifdef _WIN32
-DWORD get_interfaces_windows_mib(Remote *remote, Packet *response)
+DWORD get_interfaces_mib(Remote *remote, Packet *response)
 {
 	DWORD tableSize = sizeof(MIB_IPADDRROW);
 	DWORD index;
@@ -45,35 +43,35 @@ DWORD get_interfaces_windows_mib(Remote *remote, Packet *response)
 	// Enumerate the entries
 	for (index = 0; index < table->dwNumEntries; index++)
 	{
-		Packet* group = packet_create_group();
+		Packet* group = met_api->packet.create_group();
 
-		packet_add_tlv_uint(group, TLV_TYPE_INTERFACE_INDEX, table->table[index].dwIndex);
-		packet_add_tlv_raw(group, TLV_TYPE_IP, (PUCHAR)&table->table[index].dwAddr, sizeof(DWORD));
-		packet_add_tlv_raw(group, TLV_TYPE_NETMASK, (PUCHAR)&table->table[index].dwMask, sizeof(DWORD));
+		met_api->packet.add_tlv_uint(group, TLV_TYPE_INTERFACE_INDEX, table->table[index].dwIndex);
+		met_api->packet.add_tlv_raw(group, TLV_TYPE_IP, (PUCHAR)&table->table[index].dwAddr, sizeof(DWORD));
+		met_api->packet.add_tlv_raw(group, TLV_TYPE_NETMASK, (PUCHAR)&table->table[index].dwMask, sizeof(DWORD));
 
 		iface.dwIndex = table->table[index].dwIndex;
 
 		// If interface information can get gotten, use it.
 		if (GetIfEntry(&iface) == NO_ERROR)
 		{
-			packet_add_tlv_raw(group, TLV_TYPE_MAC_ADDR, (PUCHAR)iface.bPhysAddr, iface.dwPhysAddrLen);
-			packet_add_tlv_uint(group, TLV_TYPE_INTERFACE_MTU, iface.dwMtu);
+			met_api->packet.add_tlv_raw(group, TLV_TYPE_MAC_ADDR, (PUCHAR)iface.bPhysAddr, iface.dwPhysAddrLen);
+			met_api->packet.add_tlv_uint(group, TLV_TYPE_INTERFACE_MTU, iface.dwMtu);
 
 			if (iface.bDescr)
 			{
-				packet_add_tlv_string(group, TLV_TYPE_MAC_NAME, iface.bDescr);
+				met_api->packet.add_tlv_string(group, TLV_TYPE_MAC_NAME, iface.bDescr);
 			}
 		}
 
 		// Add the interface group
-		packet_add_group(response, TLV_TYPE_NETWORK_INTERFACE, group);
+		met_api->packet.add_group(response, TLV_TYPE_NETWORK_INTERFACE, group);
 	}
 
 	free(table);
 	return ERROR_SUCCESS;
 }
 
-DWORD get_interfaces_windows(Remote *remote, Packet *response)
+DWORD get_interfaces(Remote *remote, Packet *response)
 {
 	DWORD result = ERROR_SUCCESS;
 
@@ -109,8 +107,8 @@ DWORD get_interfaces_windows(Remote *remote, Packet *response)
 		GetModuleHandle("iphlpapi"), "GetAdaptersAddresses");
 	if (!gaa)
 	{
-		dprintf("[INTERFACE] No 'GetAdaptersAddresses'. Falling back on get_interfaces_windows_mib");
-		return get_interfaces_windows_mib(remote, response);
+		dprintf("[INTERFACE] No 'GetAdaptersAddresses'. Falling back on get_interfaces_mib");
+		return get_interfaces_mib(remote, response);
 	}
 
 	gaa(family, flags, NULL, pAdapters, &outBufLen);
@@ -132,7 +130,7 @@ DWORD get_interfaces_windows(Remote *remote, Packet *response)
 	if (pAdapters->Length <= 72)
 	{
 		dprintf("[INTERFACE] PIP_ADAPTER_PREFIX is missing");
-		result = get_interfaces_windows_mib(remote, response);
+		result = get_interfaces_mib(remote, response);
 		goto out;
 	}
 
@@ -147,19 +145,19 @@ DWORD get_interfaces_windows(Remote *remote, Packet *response)
 		// Save the first prefix for later in case we don't have an OnLinkPrefixLength
 		pPrefix = pCurr->FirstPrefix;
 
-		Packet* group = packet_create_group();
+		Packet* group = met_api->packet.create_group();
 
 		dprintf("[INTERFACE] Adding index: %u", pCurr->IfIndex);
-		packet_add_tlv_uint(group, TLV_TYPE_INTERFACE_INDEX, pCurr->IfIndex);
+		met_api->packet.add_tlv_uint(group, TLV_TYPE_INTERFACE_INDEX, pCurr->IfIndex);
 
 		dprintf("[INTERFACE] Adding MAC");
-		packet_add_tlv_raw(group, TLV_TYPE_MAC_ADDR, (PUCHAR)pCurr->PhysicalAddress, pCurr->PhysicalAddressLength);
+		met_api->packet.add_tlv_raw(group, TLV_TYPE_MAC_ADDR, (PUCHAR)pCurr->PhysicalAddress, pCurr->PhysicalAddressLength);
 
 		dprintf("[INTERFACE] Adding Description");
-		packet_add_tlv_wstring(group, TLV_TYPE_MAC_NAME, pCurr->Description);
+		met_api->packet.add_tlv_wstring(group, TLV_TYPE_MAC_NAME, pCurr->Description);
 
 		dprintf("[INTERFACE] Adding MTU: %u", pCurr->Mtu);
-		packet_add_tlv_uint(group, TLV_TYPE_INTERFACE_MTU, pCurr->Mtu);
+		met_api->packet.add_tlv_uint(group, TLV_TYPE_INTERFACE_MTU, pCurr->Mtu);
 
 		for (pAddr = (IP_ADAPTER_UNICAST_ADDRESS_LH*)pCurr->FirstUnicastAddress;
 			pAddr; pAddr = pAddr->Next)
@@ -194,24 +192,24 @@ DWORD get_interfaces_windows(Remote *remote, Packet *response)
 				dprintf("[INTERFACE] Adding Prefix: %x", prefix);
 				// the UINT value is already byte-swapped, so we add it as a raw instead of
 				// swizzling the bytes twice.
-				packet_add_tlv_raw(group, TLV_TYPE_IP_PREFIX, (PUCHAR)&prefix, sizeof(prefix));
+				met_api->packet.add_tlv_raw(group, TLV_TYPE_IP_PREFIX, (PUCHAR)&prefix, sizeof(prefix));
 			}
 
 			if (sockaddr->sa_family == AF_INET)
 			{
 				dprintf("[INTERFACE] Adding IPv4 Address: %x", ((struct sockaddr_in *)sockaddr)->sin_addr);
-				packet_add_tlv_raw(group, TLV_TYPE_IP, (PUCHAR)&(((struct sockaddr_in *)sockaddr)->sin_addr), 4);
+				met_api->packet.add_tlv_raw(group, TLV_TYPE_IP, (PUCHAR)&(((struct sockaddr_in *)sockaddr)->sin_addr), 4);
 			}
 			else
 			{
 				dprintf("[INTERFACE] Adding IPv6 Address");
-				packet_add_tlv_raw(group, TLV_TYPE_IP, (PUCHAR)&(((struct sockaddr_in6 *)sockaddr)->sin6_addr), 16);
-				packet_add_tlv_raw(group, TLV_TYPE_IP6_SCOPE, (PUCHAR)&(((struct sockaddr_in6 *)sockaddr)->sin6_scope_id), sizeof(DWORD));
+				met_api->packet.add_tlv_raw(group, TLV_TYPE_IP, (PUCHAR)&(((struct sockaddr_in6 *)sockaddr)->sin6_addr), 16);
+				met_api->packet.add_tlv_raw(group, TLV_TYPE_IP6_SCOPE, (PUCHAR)&(((struct sockaddr_in6 *)sockaddr)->sin6_scope_id), sizeof(DWORD));
 			}
 
 		}
 		// Add the interface group
-		packet_add_group(response, TLV_TYPE_NETWORK_INTERFACE, group);
+		met_api->packet.add_group(response, TLV_TYPE_NETWORK_INTERFACE, group);
 	}
 
 out:
@@ -220,73 +218,18 @@ out:
 	return result;
 }
 
-#else /* _WIN32 */
-int get_interfaces_linux(Remote *remote, Packet *response)
-{
-	struct ifaces_list *ifaces = NULL;
-	int i;
-	int result;
-	uint32_t interface_index_bigendian, mtu_bigendian;
-	DWORD allocd_entries = 10;
-
-	dprintf("Grabbing interfaces");
-	result = netlink_get_interfaces(&ifaces);
-	dprintf("Got 'em");
-
-	if (!result) {
-		for (i = 0; i < ifaces->entries; i++) {
-			Packet* group = packet_create_group();
-			int tlv_cnt = 0;
-			int j = 0;
-			dprintf("Building TLV for iface %d", i);
-
-			packet_add_tlv_string(group, TLV_TYPE_MAC_NAME, ifaces->ifaces[i].name);
-			packet_add_tlv_raw(group, TLV_TYPE_MAC_ADDR, ifaces->ifaces[i].hwaddr, 6);
-			packet_add_tlv_uint(group, TLV_TYPE_INTERFACE_MTU, ifaces->ifaces[i].mtu);
-			packet_add_tlv_string(group, TLV_TYPE_INTERFACE_FLAGS, ifaces->ifaces[i].flags);
-			packet_add_tlv_uint(group, TLV_TYPE_INTERFACE_INDEX, ifaces->ifaces[i].index);
-
-			for (j = 0; j < ifaces->ifaces[i].addr_count; j++) {
-				if (ifaces->ifaces[i].addr_list[j].family == AF_INET) {
-					dprintf("ip addr for %s", ifaces->ifaces[i].name);
-					packet_add_tlv_raw(group, TLV_TYPE_IP, (PUCHAR)&ifaces->ifaces[i].addr_list[j].ip.addr, sizeof(__u32));
-					packet_add_tlv_raw(group, TLV_TYPE_NETMASK, (PUCHAR)&ifaces->ifaces[i].addr_list[j].nm.netmask, sizeof(__u32));
-				} else {
-					dprintf("-- ip six addr for %s", ifaces->ifaces[i].name);
-					packet_add_tlv_raw(group, TLV_TYPE_IP, (PUCHAR)&ifaces->ifaces[i].addr_list[j].ip.addr6, sizeof(__u128));
-					packet_add_tlv_raw(group, TLV_TYPE_NETMASK, (PUCHAR)&ifaces->ifaces[i].addr_list[j].nm.netmask6, sizeof(__u128));
-				}
-			}
-
-			dprintf("Adding TLV to group");
-			packet_add_group(response, TLV_TYPE_NETWORK_INTERFACE, group);
-			dprintf("done Adding TLV to group");
-		}
-	}
-
-	free(ifaces);
-
-	return result;
-}
-#endif
-
-
 /*
  * Returns zero or more local interfaces to the requestor
  */
 DWORD request_net_config_get_interfaces(Remote *remote, Packet *packet)
 {
-	Packet *response = packet_create_response(packet);
+	Packet *response = met_api->packet.create_response(packet);
 	DWORD result = ERROR_SUCCESS;
 
-#ifdef _WIN32
-	result = get_interfaces_windows(remote, response);
-#else
-	result = get_interfaces_linux(remote, response);
-#endif
+	result = get_interfaces(remote, response);
 
 	// Transmit the response if valid
-	packet_transmit_response(result, remote, response);
+	met_api->packet.transmit_response(result, remote, response);
 
 	return result;
 }

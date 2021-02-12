@@ -47,19 +47,12 @@ source/jpeg-8/Backup/*
 *.suo
 *.ncb
 
-# ignore posix temp stuff
-posix-meterp-build-tmp/*
-data/meterpreter/*
-source/server/rtld/elf2bin
-source/server/rtld/lib*
-source/server/rtld/msflinker
-source/server/rtld/msflinker.bin
-source/server/rtld/rtldtest
-build.log
-
 # Doxygen output
 docs/*
 
 # ignore CLion files
 .idea/
-CMakeLists.txt
+build
+
+# AutoRecover files
+~AutoRecover.*

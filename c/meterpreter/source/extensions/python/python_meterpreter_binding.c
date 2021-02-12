@@ -2,7 +2,8 @@
  * @file python_meterpreter_binding.c
  * @brief Definitions for functions that support meterpreter bindings.
  */
-#include "../../common/common.h"
+#include "common.h"
+#include "common_metapi.h"
 #include "python_main.h"
 #include "Python.h"
 
@@ -24,14 +25,14 @@ static PyObject* binding_invoke(PyObject* self, PyObject* args)
 	Packet packet = { 0 };
 	packet.header = *(PacketHeader*)packetBytes;
 	packet.payload = (PUCHAR)(packetBytes + sizeof(PacketHeader));
-	packet.payloadLength = (ULONG)packetLength - sizeof(TlvHeader);
+	packet.payloadLength = (ULONG)packetLength - sizeof(PacketHeader);
 
 	// If the functionality doesn't require interaction with MSF, then
 	// make the packet as local so that the packet receives the request
 	// and so that the packet doesn't get sent to Meterpreter
 	packet.local = isLocal;
 
-	command_handle(gRemote, &packet);
+	met_api->command.handle(gRemote, &packet);
 
 	// really not sure how to deal with the non-local responses at this point.
 	if (packet.partner == NULL)
@@ -41,13 +42,23 @@ static PyObject* binding_invoke(PyObject* self, PyObject* args)
 	}
 
 	PyObject* result = PyString_FromStringAndSize(packet.partner->payload, packet.partner->payloadLength);
-	packet_destroy(packet.partner);
+	met_api->packet.destroy(packet.partner);
 	return result;
 }
 
-VOID binding_insert_command(const char* commandName)
+VOID binding_insert_command(UINT commandId)
 {
 	static PyMethodDef def;
+	char commandName[256] = { 0 };
+	if (commandId == 0)
+	{
+		strncpy_s(commandName, sizeof(commandName), "meterpreter_core", sizeof(commandName) - 1);
+	}
+	else
+	{
+		sprintf_s(commandName, sizeof(commandName), "command_%u", commandId);
+	}
+
 	dprintf("[PYTHON] inserting command %s", commandName);
 	def.ml_name = commandName;
 	def.ml_meth = binding_invoke;
@@ -62,19 +73,23 @@ VOID binding_startup()
 {
 	if (gBoundCommandList == NULL)
 	{
-		gBoundCommandList = list_create();
+		gBoundCommandList = met_api->list.create();
 	}
 }
 
-VOID binding_add_command(const char* commandName)
+VOID binding_add_command(UINT commandId)
 {
-	dprintf("[PYTHON] Adding command %s", (char*)commandName);
+	dprintf("[PYTHON] Adding command %u", commandId);
 
-	// only add non-core commands
-	if (_strnicmp("core_", commandName, 5) != 0)
+	// We know that core commands are within the first thousand. So we can ignore anything that isn't
+	// big enough here to skip out on all the core commands. It's a cheat, but it works. And we cheat
+	// everywhere anyway!
+
+	// Only add non-core commands
+	if (commandId >= 1000)
 	{
-		list_add(gBoundCommandList, (char*)commandName);
-		binding_insert_command(commandName);
+		met_api->list.add(gBoundCommandList, (LPVOID)(UINT_PTR)commandId);
+		binding_insert_command(commandId);
 	}
 }
 
@@ -88,9 +103,9 @@ VOID binding_init()
 	// mechanisms for extension loading. Without this, we'd have to manually wire in each of the
 	// base commands, which doesn't make sense. Instead we can match against core command names
 	// and funnel through this binding knowing that they'll be there regardless of the wiring.
-	binding_insert_command("meterpreter_core");
+	binding_insert_command(0);
 	for (PNODE node = gBoundCommandList->start; node != NULL; node = node->next)
 	{
-		binding_insert_command((const char*)node->data);
+		binding_insert_command((UINT)(UINT_PTR)node->data);
 	}
 }

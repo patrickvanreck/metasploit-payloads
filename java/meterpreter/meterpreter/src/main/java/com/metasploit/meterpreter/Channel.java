@@ -4,6 +4,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 
+import com.metasploit.meterpreter.command.CommandId;
+
 /**
  * A meterpreter channel. Channels are basically a collection of streams to interact with. Specialized subclasses of this class may handle special channels.
  *
@@ -11,12 +13,12 @@ import java.io.OutputStream;
  */
 public class Channel {
 
+    public final Meterpreter meterpreter;
     private final InputStream in;
     private final OutputStream out;
     private final int id;
-    protected final Meterpreter meterpreter;
-    private boolean active = false, closed = false, waiting = false;
-    private byte[] toRead;
+    protected boolean active = false, closed = false, waiting = false;
+    protected byte[] toRead;
 
     /**
      * Create a new "generic" channel.
@@ -30,16 +32,21 @@ public class Channel {
         this.id = meterpreter.registerChannel(this);
         this.in = in;
         this.out = out;
-        new InteractThread(in).start();
+        if (in != null) {
+            new InteractThread(in, true).start();
+        }
     }
 
     /**
      * Close this channel and deregister it from the meterpreter.
      */
     public synchronized void close() throws IOException {
-        in.close();
-        if (out != null)
+        if (in != null) {
+            in.close();
+        }
+        if (out != null) {
             out.close();
+        }
         meterpreter.channelClosed(id);
         active = false;
         closed = true;
@@ -126,7 +133,7 @@ public class Channel {
      *
      * @param data The new data available, or <code>null</code> if EOF has been reached.
      */
-    protected synchronized void handleInteract(byte[] data) throws IOException, InterruptedException {
+    public synchronized void handleInteract(byte[] data) throws IOException, InterruptedException {
         while (waiting) {
             wait();
         }
@@ -138,16 +145,16 @@ public class Channel {
         if ((toRead == null || toRead.length > 0) && !closed) {
             TLVPacket tlv = new TLVPacket();
             tlv.add(TLVType.TLV_TYPE_CHANNEL_ID, getID());
-            String method;
+            int commandId;
             if (toRead == null) {
-                method = "core_channel_close";
+                commandId = CommandId.CORE_CHANNEL_CLOSE;
                 close();
             } else {
-                method = "core_channel_write";
+                commandId = CommandId.CORE_CHANNEL_WRITE;
                 tlv.add(TLVType.TLV_TYPE_CHANNEL_DATA, toRead);
                 tlv.add(TLVType.TLV_TYPE_LENGTH, toRead.length);
             }
-            meterpreter.writeRequestPacket(method, tlv);
+            meterpreter.writeRequestPacket(commandId, tlv);
         }
         waiting = false;
         notifyAll();
@@ -158,14 +165,16 @@ public class Channel {
      */
     protected class InteractThread extends Thread {
         private final InputStream stream;
+        private final boolean handleClose;
 
-        public InteractThread(InputStream stream) {
+        public InteractThread(InputStream stream, boolean handleClose) {
             this.stream = stream;
+            this.handleClose = handleClose;
         }
 
         public void run() {
             try {
-                byte[] buffer = new byte[4096];
+                byte[] buffer = new byte[1024*1024];
                 int len;
                 while ((len = stream.read(buffer)) != -1) {
                     if (len == 0)
@@ -174,7 +183,9 @@ public class Channel {
                     System.arraycopy(buffer, 0, data, 0, len);
                     handleInteract(data);
                 }
-                handleInteract(null);
+                if (handleClose) {
+                    handleInteract(null);
+                }
             } catch (Throwable t) {
                 t.printStackTrace(meterpreter.getErrorStream());
             }

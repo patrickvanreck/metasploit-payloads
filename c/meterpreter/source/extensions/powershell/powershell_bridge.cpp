@@ -3,7 +3,8 @@
  * @brief Wrapper functions for bridging native meterp calls to powershell
  */
 extern "C" {
-#include "../../common/common.h"
+#include "common.h"
+#include "common_metapi.h"
 #include "powershell.h"
 #include "powershell_bridge.h"
 #include "powershell_bindings.h"
@@ -20,6 +21,7 @@ typedef struct _InteractiveShell
 	HANDLE wait_handle;
 	_bstr_t output;
 	wchar_t* session_id;
+	LOCK* buffer_lock;
 } InteractiveShell;
 
 #define SAFE_RELEASE(x) if((x) != NULL) { (x)->Release(); x = NULL; }
@@ -40,6 +42,9 @@ static _AppDomainPtr gClrAppDomainInterface = NULL;
 static _AssemblyPtr gClrPowershellAssembly = NULL;
 static _TypePtr gClrPowershellType = NULL;
 static LIST* gLoadedAssemblies = NULL;
+
+DWORD channelise_session(wchar_t* sessionId, Channel* channel, LPVOID context);
+DWORD unchannelise_session(wchar_t* sessionId);
 
 DWORD load_assembly(BYTE* assemblyData, DWORD assemblySize)
 {
@@ -86,7 +91,7 @@ DWORD load_assembly(BYTE* assemblyData, DWORD assemblySize)
 		}
 
 		dprintf("[PSH] Assembly appears to have been loaded successfully");
-		list_add(gLoadedAssemblies, loadedAssembly);
+		met_api->list.add(gLoadedAssemblies, loadedAssembly);
 	} while (0);
 
 	if (SUCCEEDED(hr))
@@ -123,7 +128,7 @@ DWORD remove_session(wchar_t* sessionId)
 		// Invoke the method from the Type interface.
 		hr = gClrPowershellType->InvokeMember_3(
 			bstrStaticMethodName,
-			static_cast<BindingFlags>(BindingFlags_InvokeMethod | BindingFlags_Static | BindingFlags_Public),
+			static_cast<BindingFlags>(BindingFlags_InvokeMethod | BindingFlags_Static | BindingFlags_NonPublic),
 			NULL,
 			vtEmpty,
 			psaStaticMethodArgs,
@@ -186,7 +191,7 @@ DWORD invoke_ps_command(wchar_t* sessionId, wchar_t* command, _bstr_t& output)
 		// Invoke the method from the Type interface.
 		hr = gClrPowershellType->InvokeMember_3(
 			bstrStaticMethodName,
-			static_cast<BindingFlags>(BindingFlags_InvokeMethod | BindingFlags_Static | BindingFlags_Public),
+			static_cast<BindingFlags>(BindingFlags_InvokeMethod | BindingFlags_Static | BindingFlags_NonPublic),
 			NULL,
 			vtEmpty,
 			psaStaticMethodArgs,
@@ -213,6 +218,83 @@ DWORD invoke_ps_command(wchar_t* sessionId, wchar_t* command, _bstr_t& output)
 	return (DWORD)hr;
 }
 
+DWORD initialize_dotnet_4(HMODULE hMsCoree,
+	ICLRMetaHost** clrMetaHost,
+	ICLRRuntimeInfo** clrRuntimeInfo,
+	ICorRuntimeHost** clrCorRuntimeHost)
+{
+	HRESULT hr;
+
+	pClrCreateInstance clrCreateInstance = (pClrCreateInstance)GetProcAddress(hMsCoree, "CLRCreateInstance");
+	if (clrCreateInstance == NULL) {
+		return GetLastError();
+	}
+
+	dprintf("[PSH] .NET 4 method in use");
+
+	if (FAILED(hr = clrCreateInstance(CLSID_CLRMetaHost, IID_PPV_ARGS(clrMetaHost))))
+	{
+		dprintf("[PSH] Failed to create instance of the CLR metahost 0x%x", hr);
+		return hr;
+	}
+
+	dprintf("[PSH] Getting a reference to the .NET runtime");
+	if (FAILED(hr = (*clrMetaHost)->GetRuntime(L"v2.0.50727", IID_PPV_ARGS(clrRuntimeInfo))))
+	{
+		dprintf("[PSH] Failed to get runtime v2.0.50727 instance 0x%x", hr);
+		if (FAILED(hr = (*clrMetaHost)->GetRuntime(L"v4.0.30319", IID_PPV_ARGS(clrRuntimeInfo))))
+		{
+			dprintf("[PSH] Failed to get runtime v4.0.30319 instance 0x%x", hr);
+			return hr;
+		}
+	}
+
+	dprintf("[PSH] Determining loadablility");
+	BOOL loadable = FALSE;
+	if (FAILED(hr = (*clrRuntimeInfo)->IsLoadable(&loadable)))
+	{
+		dprintf("[PSH] Unable to determine of runtime is loadable 0x%x", hr);
+		return hr;
+	}
+
+	if (!loadable)
+	{
+		dprintf("[PSH] Chosen runtime isn't loadable, exiting.");
+		return E_NOTIMPL;
+	}
+
+	dprintf("[PSH] Instantiating the COR runtime host");
+	hr = (*clrRuntimeInfo)->GetInterface(CLSID_CorRuntimeHost, IID_PPV_ARGS(clrCorRuntimeHost));
+	if (FAILED(hr))
+	{
+		dprintf("[PSH] Unable to get a reference to the COR runtime host 0x%x", hr);
+		return hr;
+	}
+
+	return ERROR_SUCCESS;
+}
+
+DWORD initialize_dotnet_2(HMODULE hMsCoree,
+	ICorRuntimeHost** clrCorRuntimeHost)
+{
+	HRESULT hr;
+
+	pCorBindToRuntime corBindToRuntime = (pCorBindToRuntime)GetProcAddress(hMsCoree, "CorBindToRuntime");
+	if (corBindToRuntime == NULL)
+	{
+		dprintf("[PSH] Unable to find .NET clr instance loader");
+		return E_NOTIMPL;
+	}
+
+	if (FAILED(hr = corBindToRuntime(L"v2.0.50727", L"wks", CLSID_CorRuntimeHost, IID_PPV_ARGS(clrCorRuntimeHost))))
+	{
+		dprintf("[PSH] Unable to bind to .NET 2 runtime host: 0x%x", hr);
+		return E_NOTIMPL;
+	}
+
+	return ERROR_SUCCESS;
+}
+
 DWORD initialize_dotnet_host()
 {
 	HRESULT hr = S_OK;
@@ -237,66 +319,15 @@ DWORD initialize_dotnet_host()
 			break;
 		}
 
-		pClrCreateInstance clrCreateInstance = (pClrCreateInstance)GetProcAddress(hMsCoree, "CLRCreateInstance");
-		if (clrCreateInstance != NULL)
-		{
-			dprintf("[PSH] .NET 4 method in use");
-
-			if (FAILED(hr = clrCreateInstance(CLSID_CLRMetaHost, IID_PPV_ARGS(&clrMetaHost))))
-			{
-				dprintf("[PSH] Failed to create instace of the CLR metahost 0x%x", hr);
-				break;
-			}
-
-			dprintf("[PSH] Getting a reference to the .NET runtime");
-			if (FAILED(hr = clrMetaHost->GetRuntime(L"v2.0.50727", IID_PPV_ARGS(&clrRuntimeInfo))))
-			{
-				dprintf("[PSH] Failed to get runtime v2.0.50727 instance 0x%x", hr);
-				if (FAILED(hr = clrMetaHost->GetRuntime(L"v4.0.30319", IID_PPV_ARGS(&clrRuntimeInfo))))
-				{
-					dprintf("[PSH] Failed to get runtime v4.0.30319 instance 0x%x", hr);
-					break;
-				}
-			}
-
-			dprintf("[PSH] Determining loadablility");
-			BOOL loadable = FALSE;
-			if (FAILED(hr = clrRuntimeInfo->IsLoadable(&loadable)))
-			{
-				dprintf("[PSH] Unable to determine of runtime is loadable 0x%x", hr);
-				break;
-			}
-
-			if (!loadable)
-			{
-				dprintf("[PSH] Chosen runtime isn't loadable, exiting.");
-				break;
-			}
-
-			dprintf("[PSH] Instantiating the COR runtime host");
-			hr = clrRuntimeInfo->GetInterface(CLSID_CorRuntimeHost, IID_PPV_ARGS(&clrCorRuntimeHost));
-			if (FAILED(hr))
-			{
-				dprintf("[PSH] Unable to get a reference to the COR runtime host 0x%x", hr);
-				break;
-			}
+		hr = initialize_dotnet_4(hMsCoree, &clrMetaHost, &clrRuntimeInfo, &clrCorRuntimeHost);
+		if (FAILED(hr)) {
+			dprintf("[PSH] .NET 4 method is missing, attempting to locate .NET 2 method");
+			hr = initialize_dotnet_2(hMsCoree, &clrCorRuntimeHost);
 		}
-		else
-		{
-			dprintf("[PSH] .NET 4 method is missing, attempting to locate .NEt 2 method");
-			pCorBindToRuntime corBindToRuntime = (pCorBindToRuntime)GetProcAddress(hMsCoree, "CorBindToRuntime");
-			if (corBindToRuntime == NULL)
-			{
-				dprintf("[PSH] Unable to find .NET clr instance loader");
-				hr = E_NOTIMPL;
-				break;
-			}
 
-			if (FAILED(hr = corBindToRuntime(L"v2.0.50727", L"wks", CLSID_CorRuntimeHost, IID_PPV_ARGS(&clrCorRuntimeHost))))
-			{
-				dprintf("[PSH] Unable to bind to .NET 2 runtime host: 0x%x", hr);
-				break;
-			}
+		if (FAILED(hr)) {
+			dprintf("[PSH] Failed to initialize .NET 4 or 2, aborting: 0x%x", hr);
+			break;
 		}
 
 		dprintf("[PSH] Starting the COR runtime host");
@@ -355,7 +386,7 @@ DWORD initialize_dotnet_host()
 			break;
 		}
 
-		gLoadedAssemblies = list_create();
+		gLoadedAssemblies = met_api->list.create();
 		dprintf("[PSH] Runtime has been initialized successfully");
 
 	} while(0);
@@ -407,8 +438,8 @@ VOID deinitialize_dotnet_host()
 
 	SAFE_RELEASE(gClrPowershellType);
 
-	list_enumerate(gLoadedAssemblies, destroy_loaded_assembly, NULL);
-	list_destroy(gLoadedAssemblies);
+	met_api->list.enumerate(gLoadedAssemblies, destroy_loaded_assembly, NULL);
+	met_api->list.destroy(gLoadedAssemblies);
 
 	SAFE_RELEASE(gClrPowershellAssembly);
 	SAFE_RELEASE(gClrAppDomainInterface);
@@ -421,13 +452,17 @@ DWORD powershell_channel_interact_notify(Remote *remote, LPVOID entryContext, LP
 {
 	Channel *channel = (Channel*)entryContext;
 	InteractiveShell* shell = (InteractiveShell*)threadContext;
-	DWORD byteCount = shell->output.length() + 1;
+	DWORD byteCount = (shell->output.length() + 1) * sizeof(wchar_t);
 
 	if (shell->output.length() > 1 && shell->wait_handle != NULL)
 	{
-		DWORD result = channel_write(channel, remote, NULL, 0, (PUCHAR)(char*)shell->output, byteCount, NULL);
+		met_api->lock.acquire(shell->buffer_lock);
+		dprintf("[PSH SHELL] received notification to write %S", (wchar_t*)shell->output);
+		DWORD result = met_api->channel.write(channel, remote, NULL, 0, (PUCHAR)(wchar_t*)shell->output, byteCount, NULL);
 		shell->output = "";
 		ResetEvent(shell->wait_handle);
+		met_api->lock.release(shell->buffer_lock);
+		dprintf("[PSH SHELL] write completed");
 	}
 
 	return ERROR_SUCCESS;
@@ -440,7 +475,11 @@ DWORD powershell_channel_interact_destroy(HANDLE waitable, LPVOID entryContext, 
 	if (shell->wait_handle)
 	{
 		HANDLE h = shell->wait_handle;
+		met_api->lock.acquire(shell->buffer_lock);
+		unchannelise_session(shell->session_id);
 		shell->wait_handle = NULL;
+		met_api->lock.release(shell->buffer_lock);
+		met_api->lock.destroy(shell->buffer_lock);
 		CloseHandle(h);
 	}
 	return ERROR_SUCCESS;
@@ -456,9 +495,12 @@ DWORD powershell_channel_interact(Channel *channel, Packet *request, LPVOID cont
 		{
 			dprintf("[PSH SHELL] beginning interaction");
 			shell->wait_handle = CreateEventA(NULL, FALSE, FALSE, NULL);
+			shell->buffer_lock = met_api->lock.create();
 
-			result = scheduler_insert_waitable(shell->wait_handle, channel, context,
+			result = met_api->scheduler.insert_waitable(shell->wait_handle, channel, context,
 				powershell_channel_interact_notify, powershell_channel_interact_destroy);
+
+			channelise_session(shell->session_id, channel, context);
 
 			SetEvent(shell->wait_handle);
 		}
@@ -466,7 +508,7 @@ DWORD powershell_channel_interact(Channel *channel, Packet *request, LPVOID cont
 	else if (shell->wait_handle != NULL)
 	{
 		dprintf("[PSH SHELL] stopping interaction");
-		result = scheduler_signal_waitable(shell->wait_handle, Stop);
+		result = met_api->scheduler.signal_waitable(shell->wait_handle, SchedulerStop);
 	}
 
 	return result;
@@ -485,10 +527,27 @@ DWORD powershell_channel_write(Channel* channel, Packet* request, LPVOID context
 	DWORD result = invoke_ps_command(shell->session_id, codeMarshall, output);
 	if (result == ERROR_SUCCESS && shell->wait_handle)
 	{
-		shell->output += output + "PS > ";
+		met_api->lock.acquire(shell->buffer_lock);
+		shell->output += output;
 		SetEvent(shell->wait_handle);
+		met_api->lock.release(shell->buffer_lock);
 	}
 	return result;
+}
+
+void powershell_channel_streamwrite(__int64 rawContext, __int64 rawMessage)
+{
+	InteractiveShell* shell = (InteractiveShell*)(UINT_PTR)rawContext;
+	char* message = (char*)(UINT_PTR)rawMessage;
+	dprintf("[PSH SHELL] streamwrite called with %p - %p - %s", rawContext, message, message);
+
+	if (shell->wait_handle)
+	{
+		met_api->lock.acquire(shell->buffer_lock);
+		shell->output += message;
+		SetEvent(shell->wait_handle);
+		met_api->lock.release(shell->buffer_lock);
+	}
 }
 
 DWORD powershell_channel_close(Channel* channel, Packet* request, LPVOID context)
@@ -512,6 +571,143 @@ DWORD powershell_channel_close(Channel* channel, Packet* request, LPVOID context
 	return ERROR_SUCCESS;
 }
 
+DWORD channelise_session(wchar_t* sessionId, Channel* channel, LPVOID context)
+{
+	if (sessionId == NULL)
+	{
+		sessionId = L"Default";
+	}
+
+	HRESULT hr;
+	bstr_t bstrStaticMethodName(L"Channelise");
+	SAFEARRAY *psaStaticMethodArgs = NULL;
+	variant_t vtEmpty;
+	variant_t vtSessionArg(sessionId == NULL ? L"Default" : sessionId);
+	variant_t vtWriterArg((__int64)powershell_channel_streamwrite);
+	variant_t vtContextArg((__int64)context);
+	LONG index = 0;
+
+	if (gClrPowershellType == NULL)
+	{
+		return ERROR_INVALID_HANDLE;
+	}
+
+	psaStaticMethodArgs = SafeArrayCreateVector(VT_VARIANT, 0, 3);
+	do
+	{
+		hr = SafeArrayPutElement(psaStaticMethodArgs, &index, &vtSessionArg);
+		if (FAILED(hr))
+		{
+			dprintf("[PSH] failed to prepare session argument: 0x%x", hr);
+			break;
+		}
+
+		index++;
+		hr = SafeArrayPutElement(psaStaticMethodArgs, &index, &vtWriterArg);
+		if (FAILED(hr))
+		{
+			dprintf("[PSH] failed to prepare command argument: 0x%x", hr);
+			break;
+		}
+
+		index++;
+		hr = SafeArrayPutElement(psaStaticMethodArgs, &index, &vtContextArg);
+		if (FAILED(hr))
+		{
+			dprintf("[PSH] failed to prepare command argument: 0x%x", hr);
+			break;
+		}
+
+		// Invoke the method from the Type interface.
+		hr = gClrPowershellType->InvokeMember_3(
+			bstrStaticMethodName,
+			static_cast<BindingFlags>(BindingFlags_InvokeMethod | BindingFlags_Static | BindingFlags_NonPublic),
+			NULL,
+			vtEmpty,
+			psaStaticMethodArgs,
+			NULL);
+
+		if (FAILED(hr))
+		{
+			dprintf("[PSH] failed to invoke powershell function %s 0x%x", (char*)bstrStaticMethodName, hr);
+			break;
+		}
+	} while (0);
+
+	if (psaStaticMethodArgs != NULL)
+	{
+		SafeArrayDestroy(psaStaticMethodArgs);
+	}
+
+	if (SUCCEEDED(hr))
+	{
+		dprintf("[PSH SHELL] successfully channelised powershell channel");
+		return ERROR_SUCCESS;
+	}
+
+	return (DWORD)hr;
+}
+
+DWORD unchannelise_session(wchar_t* sessionId)
+{
+	if (sessionId == NULL)
+	{
+		sessionId = L"Default";
+	}
+
+	HRESULT hr;
+	bstr_t bstrStaticMethodName(L"Unchannelise");
+	SAFEARRAY *psaStaticMethodArgs = NULL;
+	variant_t vtSessionArg(sessionId);
+	variant_t vtEmpty;
+	LONG index = 0;
+
+	if (gClrPowershellType == NULL)
+	{
+		return ERROR_INVALID_HANDLE;
+	}
+
+	dprintf("[PSH] Attempting to Unchannelise %S", sessionId);
+
+	psaStaticMethodArgs = SafeArrayCreateVector(VT_VARIANT, 0, 1);
+	do
+	{
+		hr = SafeArrayPutElement(psaStaticMethodArgs, &index, &vtSessionArg);
+		if (FAILED(hr))
+		{
+			dprintf("[PSH] failed to prepare session argument: 0x%x", hr);
+			break;
+		}
+
+		// Invoke the method from the Type interface.
+		hr = gClrPowershellType->InvokeMember_3(
+			bstrStaticMethodName,
+			static_cast<BindingFlags>(BindingFlags_InvokeMethod | BindingFlags_Static | BindingFlags_NonPublic),
+			NULL,
+			vtEmpty,
+			psaStaticMethodArgs,
+			NULL);
+
+		if (FAILED(hr))
+		{
+			dprintf("[PSH] failed to invoke powershell function %s 0x%x", (char*)bstrStaticMethodName, hr);
+			break;
+		}
+	} while (0);
+
+	if (psaStaticMethodArgs != NULL)
+	{
+		SafeArrayDestroy(psaStaticMethodArgs);
+	}
+
+	if (SUCCEEDED(hr))
+	{
+		return ERROR_SUCCESS;
+	}
+
+	return (DWORD)hr;
+}
+
 /*!
  * @brief Start an interactive powershell session.
  * @param remote Pointer to the \c Remote making the request.
@@ -521,7 +717,7 @@ DWORD powershell_channel_close(Channel* channel, Packet* request, LPVOID context
 DWORD request_powershell_shell(Remote *remote, Packet *packet)
 {
 	DWORD dwResult = ERROR_SUCCESS;
-	Packet* response = packet_create_response(packet);
+	Packet* response = met_api->packet.create_response(packet);
 	InteractiveShell* shell = NULL;
 
 	if (response)
@@ -537,7 +733,7 @@ DWORD request_powershell_shell(Remote *remote, Packet *packet)
 				dwResult = ERROR_OUTOFMEMORY;
 				break;
 			}
-			shell->session_id = packet_get_tlv_value_wstring(packet, TLV_TYPE_POWERSHELL_SESSIONID);
+			shell->session_id = met_api->packet.get_tlv_value_wstring(packet, TLV_TYPE_POWERSHELL_SESSIONID);
 
 			if (shell->session_id != NULL)
 			{
@@ -553,13 +749,13 @@ DWORD request_powershell_shell(Remote *remote, Packet *packet)
 			chanOps.native.write = powershell_channel_write;
 			chanOps.native.interact = powershell_channel_interact;
 			shell->output = "PS > ";
-			Channel* newChannel = channel_create_pool(0, CHANNEL_FLAG_SYNCHRONOUS, &chanOps);
+			Channel* newChannel = met_api->channel.create_pool(0, CHANNEL_FLAG_SYNCHRONOUS, &chanOps);
 
-			channel_set_type(newChannel, "psh");
-			packet_add_tlv_uint(response, TLV_TYPE_CHANNEL_ID, channel_get_id(newChannel));
+			met_api->channel.set_type(newChannel, "psh");
+			met_api->packet.add_tlv_uint(response, TLV_TYPE_CHANNEL_ID, met_api->channel.get_id(newChannel));
 		} while (0);
 
-		packet_transmit_response(dwResult, remote, response);
+		met_api->packet.transmit_response(dwResult, remote, response);
 	}
 
 	if (dwResult != ERROR_SUCCESS)
@@ -579,23 +775,23 @@ DWORD request_powershell_shell(Remote *remote, Packet *packet)
 DWORD request_powershell_execute(Remote *remote, Packet *packet)
 {
 	DWORD dwResult = ERROR_SUCCESS;
-	Packet* response = packet_create_response(packet);
+	Packet* response = met_api->packet.create_response(packet);
 	wchar_t* sessionId = NULL;
 
 	if (response)
 	{
-		char* code = packet_get_tlv_value_string(packet, TLV_TYPE_POWERSHELL_CODE);
+		char* code = met_api->packet.get_tlv_value_string(packet, TLV_TYPE_POWERSHELL_CODE);
 		if (code != NULL)
 		{
 			_bstr_t codeMarshall(code);
 			_bstr_t output;
 
-			sessionId = packet_get_tlv_value_wstring(packet, TLV_TYPE_POWERSHELL_SESSIONID);
+			sessionId = met_api->packet.get_tlv_value_wstring(packet, TLV_TYPE_POWERSHELL_SESSIONID);
 
 			dwResult = invoke_ps_command(sessionId, codeMarshall, output);
 			if (dwResult == ERROR_SUCCESS)
 			{
-				packet_add_tlv_string(response, TLV_TYPE_POWERSHELL_RESULT, output);
+				met_api->packet.add_tlv_string(response, TLV_TYPE_POWERSHELL_RESULT, output);
 			}
 		}
 		else
@@ -603,7 +799,7 @@ DWORD request_powershell_execute(Remote *remote, Packet *packet)
 			dprintf("[PSH] Code parameter missing from call");
 			dwResult = ERROR_INVALID_PARAMETER;
 		}
-		packet_transmit_response(dwResult, remote, response);
+		met_api->packet.transmit_response(dwResult, remote, response);
 	}
 
 	SAFE_FREE(sessionId);
@@ -620,15 +816,15 @@ DWORD request_powershell_execute(Remote *remote, Packet *packet)
 DWORD request_powershell_assembly_load(Remote *remote, Packet *packet)
 {
 	DWORD dwResult = ERROR_SUCCESS;
-	Packet* response = packet_create_response(packet);
+	Packet* response = met_api->packet.create_response(packet);
 	wchar_t* sessionId = NULL;
 
 	if (response)
 	{
-		BYTE* binary = packet_get_tlv_value_raw(packet, TLV_TYPE_POWERSHELL_ASSEMBLY);
+		DWORD binarySize = 0;
+		BYTE* binary = met_api->packet.get_tlv_value_raw(packet, TLV_TYPE_POWERSHELL_ASSEMBLY, &binarySize);
 		if (binary != NULL)
 		{
-			DWORD binarySize = packet_get_tlv_value_uint(packet, TLV_TYPE_POWERSHELL_ASSEMBLY_SIZE);
 			dwResult = load_assembly(binary, binarySize);
 		}
 		else
@@ -636,7 +832,7 @@ DWORD request_powershell_assembly_load(Remote *remote, Packet *packet)
 			dprintf("[PSH] Assembly parameter missing from call");
 			dwResult = ERROR_INVALID_PARAMETER;
 		}
-		packet_transmit_response(dwResult, remote, response);
+		met_api->packet.transmit_response(dwResult, remote, response);
 	}
 
 	SAFE_FREE(sessionId);
@@ -653,16 +849,16 @@ DWORD request_powershell_assembly_load(Remote *remote, Packet *packet)
 DWORD request_powershell_session_remove(Remote *remote, Packet *packet)
 {
 	DWORD dwResult = ERROR_SUCCESS;
-	Packet* response = packet_create_response(packet);
+	Packet* response = met_api->packet.create_response(packet);
 	wchar_t* sessionId = NULL;
 
 	if (response)
 	{
-		sessionId = packet_get_tlv_value_wstring(packet, TLV_TYPE_POWERSHELL_SESSIONID);
+		sessionId = met_api->packet.get_tlv_value_wstring(packet, TLV_TYPE_POWERSHELL_SESSIONID);
 
 		dwResult = remove_session(sessionId);
 
-		packet_transmit_response(dwResult, remote, response);
+		met_api->packet.transmit_response(dwResult, remote, response);
 	}
 
 	SAFE_FREE(sessionId);

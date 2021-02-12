@@ -5,15 +5,13 @@
  */
 extern "C" {
 #include "extapi.h"
+#include "common_metapi.h"
 #include <inttypes.h>
 #include "wmi_interface.h"
 }
-#include <WbemCli.h>
+#include <wbemcli.h>
 #include <comutil.h>
 #include <comdef.h>
-
-#pragma comment(lib, "wbemuuid.lib")
-#pragma comment(lib, "comsuppw.lib")
 
 #define FIELD_SIZE 1024
 #define ENUM_TIMEOUT 5000
@@ -24,6 +22,76 @@ extern "C" {
 #define SYSTEM_FIELD_COUNT 9
 #else
 #define SYSTEM_FIELD_COUNT 8
+#endif
+
+#ifdef __MINGW32__
+// Provide custom implmentations of the BSTR conversion
+// functions because comsuppw.lib is a proprietary lib
+// that comes with Vis Studio
+namespace _com_util
+{
+	inline BSTR ConvertStringToBSTR(const char* pSrc)
+	{
+		if(!pSrc)
+		{
+			return NULL;
+		}
+
+		DWORD cwch;
+		BSTR wsOut(NULL);
+
+		if(cwch = ::MultiByteToWideChar(CP_ACP, 0, pSrc, -1, NULL, 0))
+		{
+			cwch--;
+			wsOut = ::SysAllocStringLen(NULL, cwch);
+
+			if(wsOut)
+			{
+				if(!::MultiByteToWideChar(CP_ACP, 0, pSrc, -1, wsOut, cwch))
+				{
+					if(ERROR_INSUFFICIENT_BUFFER == ::GetLastError())
+					{
+						return wsOut;
+					}
+					::SysFreeString(wsOut);//must clean up
+					wsOut = NULL;
+				}
+			}
+		}
+
+		return wsOut;
+	}
+
+	inline char* ConvertBSTRToString(BSTR pSrc)
+	{
+		if(!pSrc)
+		{
+			return NULL;
+		}
+
+		//convert even embeded NULL
+		DWORD cb,cwch = ::SysStringLen(pSrc);
+
+		char *szOut = NULL;
+
+		if(cb = ::WideCharToMultiByte(CP_ACP, 0, pSrc, cwch + 1, NULL, 0, 0, 0))
+		{
+			szOut = new char[cb];
+			if(szOut)
+			{
+				szOut[cb - 1]  = '\0';
+
+				if(!::WideCharToMultiByte(CP_ACP, 0, pSrc, cwch + 1, szOut, cb, 0, 0))
+				{
+					delete []szOut;//clean up if failed;
+					szOut = NULL;
+				}
+			}
+		}
+
+		return szOut;
+	}
+}
 #endif
 
 /*!
@@ -38,7 +106,7 @@ extern "C" {
  *          array depth has been attempted, but no tests have yet found a nested array in the
  *          result set. There's probably bugs in that bit.
  */
-char* variant_to_string(_variant_t& v, char* buffer, DWORD bufferSize)
+char* variant_to_string(const _variant_t& v, char* buffer, DWORD bufferSize)
 {
 	dprintf("[WMI] preparing to parse variant of type %u (%x), buffer size %u", v.vt, v.vt, bufferSize);
 
@@ -54,32 +122,36 @@ char* variant_to_string(_variant_t& v, char* buffer, DWORD bufferSize)
 		strncpy_s(buffer, bufferSize, v.boolVal == VARIANT_TRUE ? "true" : "false", bufferSize - 1);
 		break;
 	case VT_I1:
-		_snprintf_s(buffer, bufferSize, bufferSize - 1, "%"PRId8, (CHAR)v);
+		_snprintf_s(buffer, bufferSize, bufferSize - 1, "%" PRId8, (CHAR)v);
 		break;
 	case VT_I2:
-		_snprintf_s(buffer, bufferSize, bufferSize - 1, "%"PRId16, (SHORT)v);
+		_snprintf_s(buffer, bufferSize, bufferSize - 1, "%" PRId16, (SHORT)v);
 		break;
 	case VT_INT:
 	case VT_I4:
-		_snprintf_s(buffer, bufferSize, bufferSize - 1, "%"PRId32, (INT)v);
+		_snprintf_s(buffer, bufferSize, bufferSize - 1, "%" PRId32, (INT)v);
 		break;
 	case VT_INT_PTR:
+		_snprintf_s(buffer, bufferSize, bufferSize - 1, "%" PRIdPTR, (INT_PTR)v);
+		break;
 	case VT_I8:
-		_snprintf_s(buffer, bufferSize, bufferSize - 1, "%"PRId64, (INT_PTR)v);
+		_snprintf_s(buffer, bufferSize, bufferSize - 1, "%" PRId64, (__int64)v);
 		break;
 	case VT_UI1:
-		_snprintf_s(buffer, bufferSize, bufferSize - 1, "%"PRIu8, (BYTE)v);
+		_snprintf_s(buffer, bufferSize, bufferSize - 1, "%" PRIu8, (BYTE)v);
 		break;
 	case VT_UI2:
-		_snprintf_s(buffer, bufferSize, bufferSize - 1, "%"PRIu16, (SHORT)v);
+		_snprintf_s(buffer, bufferSize, bufferSize - 1, "%" PRIu16, (SHORT)v);
 		break;
 	case VT_UINT:
 	case VT_UI4:
-		_snprintf_s(buffer, bufferSize, bufferSize - 1, "%"PRIu32, (UINT)v);
+		_snprintf_s(buffer, bufferSize, bufferSize - 1, "%" PRIu32, (UINT)v);
 		break;
 	case VT_UINT_PTR:
+		_snprintf_s(buffer, bufferSize, bufferSize - 1, "%" PRIuPTR, (UINT_PTR)v);
+		break;
 	case VT_UI8:
-		_snprintf_s(buffer, bufferSize, bufferSize - 1, "%"PRIu64, (UINT_PTR)v);
+		_snprintf_s(buffer, bufferSize, bufferSize - 1, "%" PRIu64, (unsigned __int64)v);
 		break;
 	case VT_BSTR:
 	case VT_LPSTR:
@@ -323,7 +395,7 @@ DWORD wmi_query(LPCWSTR lpwRoot, LPWSTR lpwQuery, Packet* response)
 
 				VARIANT** fields = (VARIANT**)malloc(sizeof(VARIANT*) * fieldCount);
 				char value[FIELD_SIZE];
-				Packet* fieldGroup = packet_create_group();
+				Packet* fieldGroup = met_api->packet.create_group();
 
 				memset(fields, 0, sizeof(VARIANT*) * fieldCount);
 
@@ -333,14 +405,14 @@ DWORD wmi_query(LPCWSTR lpwRoot, LPWSTR lpwQuery, Packet* response)
 					SafeArrayPtrOfIndex(pFieldArray, indices, (void**)&fields[i]);
 					_bstr_t bstr(fields[i]->bstrVal);
 
-					packet_add_tlv_string(fieldGroup, TLV_TYPE_EXT_WMI_FIELD, (const char*)bstr);
+					met_api->packet.add_tlv_string(fieldGroup, TLV_TYPE_EXT_WMI_FIELD, (const char*)bstr);
 
 					dprintf("[WMI] Added header field: %s", (const char*)bstr);
 				}
 
 				dprintf("[WMI] added all field headers");
 				// add the field names to the packet
-				packet_add_group(response, TLV_TYPE_EXT_WMI_FIELDS, fieldGroup);
+				met_api->packet.add_group(response, TLV_TYPE_EXT_WMI_FIELDS, fieldGroup);
 
 				dprintf("[WMI] processing values...");
 				// with that horrible pain out of the way, let's actually grab the data
@@ -352,7 +424,7 @@ DWORD wmi_query(LPCWSTR lpwRoot, LPWSTR lpwQuery, Packet* response)
 						break;
 					}
 
-					Packet* valueGroup = packet_create_group();
+					Packet* valueGroup = met_api->packet.create_group();
 
 					for (LONG i = 0; i < fieldCount; ++i)
 					{
@@ -369,13 +441,13 @@ DWORD wmi_query(LPCWSTR lpwRoot, LPWSTR lpwQuery, Packet* response)
 							variant_to_string(_variant_t(varValue), value, FIELD_SIZE);
 						}
 
-						packet_add_tlv_string(valueGroup, TLV_TYPE_EXT_WMI_VALUE, value);
+						met_api->packet.add_tlv_string(valueGroup, TLV_TYPE_EXT_WMI_VALUE, value);
 
 						dprintf("[WMI] Added value for %s: %s", (char*)_bstr_t(fields[i]->bstrVal), value);
 					}
 
 					// add the field values to the packet
-					packet_add_group(response, TLV_TYPE_EXT_WMI_VALUES, valueGroup);
+					met_api->packet.add_group(response, TLV_TYPE_EXT_WMI_VALUES, valueGroup);
 
 					pObj->Release();
 					pObj = NULL;
@@ -432,7 +504,7 @@ DWORD wmi_query(LPCWSTR lpwRoot, LPWSTR lpwQuery, Packet* response)
 		_com_error comError(hResult);
 		_snprintf_s(errorMessage, 1024, 1023, "%s (0x%x)", comError.ErrorMessage(), hResult);
 		dprintf("[WMI] returning error -> %s", errorMessage);
-		packet_add_tlv_string(response, TLV_TYPE_EXT_WMI_ERROR, errorMessage);
+		met_api->packet.add_tlv_string(response, TLV_TYPE_EXT_WMI_ERROR, errorMessage);
 		hResult = S_OK;
 	}
 

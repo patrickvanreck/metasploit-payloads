@@ -1,159 +1,383 @@
+ID := $(shell id -u)
+DOCKER_CONTAINER=rapid7/msf-ubuntu-x64-meterpreter:latest
+COMMON_GEN=-Wno-dev -DUSE_STATIC_MSVC_RUNTIMES=ON
+COMMON_GEN_X86=-DCMAKE_TOOLCHAIN_FILE=../toolsets/i686-w64-mingw32.cmake -DBUILD_ARCH=Win32 ${COMMON_GEN}
+COMMON_GEN_X64=-DCMAKE_TOOLCHAIN_FILE=../toolsets/x86_64-w64-mingw32.cmake -DBUILD_ARCH=x64 ${COMMON_GEN}
+COMMON_BUILD=--config Release
 
-# Used by 'install' target. Change this to wherever your framework checkout is.
-# Doesn't have to be development. Should point to the base directory where
-# msfconsole lives.
-framework_dir = ../../../metasploit-framework/
+all: meterpreter
 
-# Change me if you want to build openssl and libpcap somewhere else
-build_tmp = posix-meterp-build-tmp
-cwd=$(shell pwd)
+clean: meterpreter-x64-clean meterpreter-x86-clean
 
-ROOT=$(basename $(CURDIR:%/=%))
-BIONIC=$(ROOT)/source/bionic
-LIBC=$(BIONIC)/libc
-LIBM=$(BIONIC)/libm
-COMPILED=$(BIONIC)/compiled
+install:
+	@cp -f output/*.dll ../../../metasploit-framework/data/meterpreter
 
-objects  = $(COMPILED)/libc.so
-objects += $(COMPILED)/libm.so
-objects += $(COMPILED)/libdl.so
-objects += $(COMPILED)/libcrypto.so
-objects += $(COMPILED)/libssl.so
-objects += $(COMPILED)/libsupport.so
-objects += $(COMPILED)/libmetsrv_main.so
-objects += $(COMPILED)/libpcap.so
+##########################################################################################
+### Build all
+##########################################################################################
 
-outputs  = data/meterpreter/msflinker_linux_x86.bin
-outputs += data/meterpreter/ext_server_stdapi.lso
-outputs += data/meterpreter/ext_server_sniffer.lso
-outputs += data/meterpreter/ext_server_networkpug.lso
+meterpreter: meterpreter-x86 meterpreter-x64
 
-STD_CFLAGS =  -Os -m32 -march=i386 -fno-stack-protector
-STD_CFLAGS += -Wl,--hash-style=sysv
-STD_CFLAGS += -lc -lm -nostdinc -nostdlib -fno-builtin -fPIC -DPIC
-STD_CFLAGS += -Dwchar_t='char' -D_SIZE_T_DECLARED -DElf_Size='u_int32_t'
-STD_CFLAGS += -D_BYTE_ORDER=_LITTLE_ENDIAN -D_UNIX -D__linux__ -lgcc
-STD_CFLAGS += -I$(LIBC)/include
-STD_CFLAGS += -I$(LIBC)/kernel/common/linux/
-STD_CFLAGS += -I$(LIBC)/kernel/common/
-STD_CFLAGS += -I$(LIBC)/arch-x86/include/
-STD_CFLAGS += -I$(LIBC)/kernel/arch-x86/
-STD_CFLAGS += -L$(COMPILED)
+meterpreter-x86: meterpreter-x86-gen meterpreter-x86-build
 
-GCCGOLD = $(shell (echo "int main(){}" | gcc -fuse-ld=gold -o/dev/null -xc -); echo $$?)
-ifeq "$(GCCGOLD)" "0"
-    STD_CFLAGS += -fuse-ld=gold
-endif
+meterpreter-x86-gen:
+	@cmake -S workspace -B workspace/build/mingw-x86 $(COMMON_GEN_X86)
 
-PCAP_CFLAGS = $(STD_CFLAGS)
+meterpreter-x86-build:
+	@cmake --build workspace/build/mingw-x86 $(COMMON_BUILD)
 
-OSSL_CFLAGS = $(STD_CFLAGS) -I$(LIBC)/private -I$(LIBM)/include
+meterpreter-x86-clean:
+	@rm -rf workspace/build/mingw-x86* && rm -rf output/*.x86.dll
 
-workspace = workspace
+meterpreter-x64: meterpreter-x64-gen meterpreter-x64-build
 
-all: $(objects) $(outputs)
+meterpreter-x64-gen:
+	@cmake -S workspace -B workspace/build/mingw-x64 $(COMMON_GEN_X64)
 
-include deps/libressl/Makefile
-include deps/libpcap/Makefile
+meterpreter-x64-build:
+	@cmake --build workspace/build/mingw-x64 $(COMMON_BUILD)
 
-debug: DEBUG=true
-# I'm 99% sure this is the wrong way to do this
-debug: MAKE += debug
-debug: all
+meterpreter-x64-clean:
+	@rm -rf workspace/build/mingw-x64* && rm -rf output/*.x64.dll
 
-$(COMPILED):
-	mkdir $(COMPILED)/
+##########################################################################################
+### Component Builds
+##########################################################################################
 
-$(COMPILED)/libc.so: $(COMPILED)
-	@echo Building libc
-	@(cd source/bionic/libc && ARCH=x86 TOP=${ROOT} jam > build.log 2>&1 )
-	@(cd source/bionic/libc/out/x86/ && $(MAKE) -f Makefile.msf >> build.log 2>&1 && [ -f libbionic.so ])
-	@cp source/bionic/libc/out/x86/libbionic.so $(COMPILED)/libc.so
+### Metsrv
 
-$(COMPILED)/libm.so:
-	@echo Building libm
-	@$(MAKE) -C $(LIBM) -f Makefile.msf > build.log 2>&1 && [ -f $(LIBM)/libm.so ]
-	@cp $(LIBM)/libm.so $(COMPILED)/libm.so
+meterpreter-metsrv: meterpreter-metsrv-x86 meterpreter-metsrv-x64
 
-$(COMPILED)/libdl.so:
-	@echo Building libdl
-	@$(MAKE) -C $(BIONIC)/libdl > build.log && [ -f $(BIONIC)/libdl/libdl.so ]
-	@cp $(BIONIC)/libdl/libdl.so $(COMPILED)/libdl.so
+meterpreter-metsrv-x86: meterpreter-metsrv-x86-gen meterpreter-metsrv-x86-build
 
-data/meterpreter/msflinker_linux_x86.bin: source/server/rtld/msflinker.bin
-	cp source/server/rtld/msflinker.bin data/meterpreter/msflinker_linux_x86.bin
+meterpreter-metsrv-x86-gen:
+	@cmake -S workspace -B workspace/build/mingw-x86-metsrv -DBUILD_ALL=OFF -DBUILD_METSRV=ON $(COMMON_GEN_X86)
 
-source/server/rtld/msflinker.bin: $(COMPILED)/libc.so \
-	$(wildcard source/server/*.h) \
-	$(wildcard source/server/*.c)
-	$(MAKE) -C source/server/rtld
+meterpreter-metsrv-x86-build:
+	@cmake --build workspace/build/mingw-x86-metsrv $(COMMON_BUILD)
 
-$(workspace)/metsrv/libmetsrv_main.so: $(COMPILED)/libsupport.so \
-	$(wildcard source/server/*.h) \
-	$(wildcard source/server/*.c)
-	$(MAKE) -C $(workspace)/metsrv
+meterpreter-metsrv-x64: meterpreter-metsrv-x64-gen meterpreter-metsrv-x64-build
 
-$(COMPILED)/libmetsrv_main.so: $(workspace)/metsrv/libmetsrv_main.so
-	cp $(workspace)/metsrv/libmetsrv_main.so $(COMPILED)/libmetsrv_main.so
+meterpreter-metsrv-x64-gen:
+	@cmake -S workspace -B workspace/build/mingw-x64-metsrv -DBUILD_ALL=OFF -DBUILD_METSRV=ON $(COMMON_GEN_X64)
 
-$(workspace)/common/libsupport.so: \
-	$(wildcard source/common/*.h) \
-	$(wildcard source/common/*.c)
-	$(MAKE) -C $(workspace)/common
+meterpreter-metsrv-x64-build:
+	@cmake --build workspace/build/mingw-x64-metsrv $(COMMON_BUILD)
 
-$(COMPILED)/libsupport.so: $(workspace)/common/libsupport.so
-	cp $(workspace)/common/libsupport.so $(COMPILED)/libsupport.so
+### Stdapi
 
-$(workspace)/ext_server_sniffer/ext_server_sniffer.so: \
-	$(wildcard source/extensions/sniffer/*.h) \
-	$(wildcard source/extensions/sniffer/*.c) \
-	$(COMPILED)/libpcap.so
-	$(MAKE) -C $(workspace)/ext_server_sniffer
+meterpreter-ext-stdapi: meterpreter-ext-stdapi-x86 meterpreter-ext-stdapi-x64
 
-data/meterpreter/ext_server_sniffer.lso: \
-	$(workspace)/ext_server_sniffer/ext_server_sniffer.so
-	cp $(workspace)/ext_server_sniffer/ext_server_sniffer.so \
-		data/meterpreter/ext_server_sniffer.lso
+meterpreter-ext-stdapi-x86: meterpreter-ext-stdapi-x86-gen meterpreter-ext-stdapi-x86-build
 
-$(workspace)/ext_server_stdapi/ext_server_stdapi.so: \
-	$(wildcard source/extensions/stdapi/*.h) \
-	$(wildcard source/extensions/stdapi/*.c)
-	$(MAKE) -C $(workspace)/ext_server_stdapi
+meterpreter-ext-stdapi-x86-gen:
+	@cmake -S workspace -B workspace/build/mingw-x86-ext-stdapi -DBUILD_ALL=OFF -DBUILD_EXT_STDAPI=ON $(COMMON_GEN_X86)
 
-data/meterpreter/ext_server_stdapi.lso: \
-	$(workspace)/ext_server_stdapi/ext_server_stdapi.so
-	cp $(workspace)/ext_server_stdapi/ext_server_stdapi.so \
-		data/meterpreter/ext_server_stdapi.lso
+meterpreter-ext-stdapi-x86-build:
+	@cmake --build workspace/build/mingw-x86-ext-stdapi $(COMMON_BUILD)
 
-$(workspace)/ext_server_networkpug/ext_server_networkpug.so: \
-	$(wildcard source/extensions/networkpug/*.h) \
-	$(wildcard source/extensions/networkpug/*.c)
-	$(MAKE) -C $(workspace)/ext_server_networkpug
+meterpreter-ext-stdapi-x64: meterpreter-ext-stdapi-x64-gen meterpreter-ext-stdapi-x64-build
 
-data/meterpreter/ext_server_networkpug.lso: \
-    $(workspace)/ext_server_networkpug/ext_server_networkpug.so
-	cp $(workspace)/ext_server_networkpug/ext_server_networkpug.so \
-		data/meterpreter/ext_server_networkpug.lso
+meterpreter-ext-stdapi-x64-gen:
+	@cmake -S workspace -B workspace/build/mingw-x64-ext-stdapi -DBUILD_ALL=OFF -DBUILD_EXT_STDAPI=ON $(COMMON_GEN_X64)
 
+meterpreter-ext-stdapi-x64-build:
+	@cmake --build workspace/build/mingw-x64-ext-stdapi $(COMMON_BUILD)
 
-install: $(outputs)
-	cp $(outputs) $(framework_dir)/data/meterpreter/
+### Priv
 
-clean:
-	rm -f $(objects)
-	make -C source/server/rtld/ clean
-	make -C $(workspace) clean
+meterpreter-ext-priv: meterpreter-ext-priv-x86 meterpreter-ext-priv-x64
 
-depclean:
-	rm -f source/bionic/lib*/*.o
-	find source/bionic/ -name '*.a' -print0 | xargs -0 rm -f 2>/dev/null
-	find source/bionic/ -name '*.so' -print0 | xargs -0 rm -f 2>/dev/null
-	find . -name 'build.log' | xargs rm -f
-	rm -f source/bionic/lib*/*.so
+meterpreter-ext-priv-x86: meterpreter-ext-priv-x86-gen meterpreter-ext-priv-x86-build
 
-really-clean: clean clean-ssl clean-pcap depclean
+meterpreter-ext-priv-x86-gen:
+	@cmake -S workspace -B workspace/build/mingw-x86-ext-priv -DBUILD_ALL=OFF -DBUILD_EXT_PRIV=ON $(COMMON_GEN_X86)
 
-distclean: really-clean
+meterpreter-ext-priv-x86-build:
+	@cmake --build workspace/build/mingw-x86-ext-priv $(COMMON_BUILD)
 
-.PHONY: clean clean-ssl clean-pcap really-clean debug
+meterpreter-ext-priv-x64: meterpreter-ext-priv-x64-gen meterpreter-ext-priv-x64-build
 
+meterpreter-ext-priv-x64-gen:
+	@cmake -S workspace -B workspace/build/mingw-x64-ext-priv -DBUILD_ALL=OFF -DBUILD_EXT_PRIV=ON $(COMMON_GEN_X64)
+
+meterpreter-ext-priv-x64-build:
+	@cmake --build workspace/build/mingw-x64-ext-priv $(COMMON_BUILD)
+
+### Extapi
+
+meterpreter-ext-extapi: meterpreter-ext-extapi-x86 meterpreter-ext-extapi-x64
+
+meterpreter-ext-extapi-x86: meterpreter-ext-extapi-x86-gen meterpreter-ext-extapi-x86-build
+
+meterpreter-ext-extapi-x86-gen:
+	@cmake -S workspace -B workspace/build/mingw-x86-ext-extapi -DBUILD_ALL=OFF -DBUILD_EXT_EXTAPI=ON $(COMMON_GEN_X86)
+
+meterpreter-ext-extapi-x86-build:
+	@cmake --build workspace/build/mingw-x86-ext-extapi $(COMMON_BUILD)
+
+meterpreter-ext-extapi-x64: meterpreter-ext-extapi-x64-gen meterpreter-ext-extapi-x64-build
+
+meterpreter-ext-extapi-x64-gen:
+	@cmake -S workspace -B workspace/build/mingw-x64-ext-extapi -DBUILD_ALL=OFF -DBUILD_EXT_EXTAPI=ON $(COMMON_GEN_X64)
+
+meterpreter-ext-extapi-x64-build:
+	@cmake --build workspace/build/mingw-x64-ext-extapi $(COMMON_BUILD)
+
+### Incognito
+
+meterpreter-ext-incognito: meterpreter-ext-incognito-x86 meterpreter-ext-incognito-x64
+
+meterpreter-ext-incognito-x86: meterpreter-ext-incognito-x86-gen meterpreter-ext-incognito-x86-build
+
+meterpreter-ext-incognito-x86-gen:
+	@cmake -S workspace -B workspace/build/mingw-x86-ext-incognito -DBUILD_ALL=OFF -DBUILD_EXT_INCOGNITO=ON $(COMMON_GEN_X86)
+
+meterpreter-ext-incognito-x86-build:
+	@cmake --build workspace/build/mingw-x86-ext-incognito $(COMMON_BUILD)
+
+meterpreter-ext-incognito-x64: meterpreter-ext-incognito-x64-gen meterpreter-ext-incognito-x64-build
+
+meterpreter-ext-incognito-x64-gen:
+	@cmake -S workspace -B workspace/build/mingw-x64-ext-incognito -DBUILD_ALL=OFF -DBUILD_EXT_INCOGNITO=ON $(COMMON_GEN_X64)
+
+meterpreter-ext-incognito-x64-build:
+	@cmake --build workspace/build/mingw-x64-ext-incognito $(COMMON_BUILD)
+
+### LanAttacks
+
+meterpreter-ext-lanattacks: meterpreter-ext-lanattacks-x86 meterpreter-ext-lanattacks-x64
+
+meterpreter-ext-lanattacks-x86: meterpreter-ext-lanattacks-x86-gen meterpreter-ext-lanattacks-x86-build
+
+meterpreter-ext-lanattacks-x86-gen:
+	@cmake -S workspace -B workspace/build/mingw-x86-ext-lanattacks -DBUILD_ALL=OFF -DBUILD_EXT_LANATTACKS=ON $(COMMON_GEN_X86)
+
+meterpreter-ext-lanattacks-x86-build:
+	@cmake --build workspace/build/mingw-x86-ext-lanattacks $(COMMON_BUILD)
+
+meterpreter-ext-lanattacks-x64: meterpreter-ext-lanattacks-x64-gen meterpreter-ext-lanattacks-x64-build
+
+meterpreter-ext-lanattacks-x64-gen:
+	@cmake -S workspace -B workspace/build/mingw-x64-ext-lanattacks -DBUILD_ALL=OFF -DBUILD_EXT_LANATTACKS=ON $(COMMON_GEN_X64)
+
+meterpreter-ext-lanattacks-x64-build:
+	@cmake --build workspace/build/mingw-x64-ext-lanattacks $(COMMON_BUILD)
+
+### WinPMem
+
+meterpreter-ext-winpmem: meterpreter-ext-winpmem-x86 meterpreter-ext-winpmem-x64
+
+meterpreter-ext-winpmem-x86: meterpreter-ext-winpmem-x86-gen meterpreter-ext-winpmem-x86-build
+
+meterpreter-ext-winpmem-x86-gen:
+	@cmake -S workspace -B workspace/build/mingw-x86-ext-winpmem -DBUILD_ALL=OFF -DBUILD_EXT_WINPMEM=ON $(COMMON_GEN_X86)
+
+meterpreter-ext-winpmem-x86-build:
+	@cmake --build workspace/build/mingw-x86-ext-winpmem $(COMMON_BUILD)
+
+meterpreter-ext-winpmem-x64: meterpreter-ext-winpmem-x64-gen meterpreter-ext-winpmem-x64-build
+
+meterpreter-ext-winpmem-x64-gen:
+	@cmake -S workspace -B workspace/build/mingw-x64-ext-winpmem -DBUILD_ALL=OFF -DBUILD_EXT_WINPMEM=ON $(COMMON_GEN_X64)
+
+meterpreter-ext-winpmem-x64-build:
+	@cmake --build workspace/build/mingw-x64-ext-winpmem $(COMMON_BUILD)
+
+### Espia
+
+meterpreter-ext-espia: meterpreter-ext-espia-x86 meterpreter-ext-espia-x64
+
+meterpreter-ext-espia-x86: meterpreter-ext-espia-x86-gen meterpreter-ext-espia-x86-build
+
+meterpreter-ext-espia-x86-gen:
+	@cmake -S workspace -B workspace/build/mingw-x86-ext-espia -DBUILD_ALL=OFF -DBUILD_EXT_ESPIA=ON $(COMMON_GEN_X86)
+
+meterpreter-ext-espia-x86-build:
+	@cmake --build workspace/build/mingw-x86-ext-espia $(COMMON_BUILD)
+
+meterpreter-ext-espia-x64: meterpreter-ext-espia-x64-gen meterpreter-ext-espia-x64-build
+
+meterpreter-ext-espia-x64-gen:
+	@cmake -S workspace -B workspace/build/mingw-x64-ext-espia -DBUILD_ALL=OFF -DBUILD_EXT_ESPIA=ON $(COMMON_GEN_X64)
+
+meterpreter-ext-espia-x64-build:
+	@cmake --build workspace/build/mingw-x64-ext-espia $(COMMON_BUILD)
+
+### Unhook
+
+meterpreter-ext-unhook: meterpreter-ext-unhook-x86 meterpreter-ext-unhook-x64
+
+meterpreter-ext-unhook-x86: meterpreter-ext-unhook-x86-gen meterpreter-ext-unhook-x86-build
+
+meterpreter-ext-unhook-x86-gen:
+	@cmake -S workspace -B workspace/build/mingw-x86-ext-unhook -DBUILD_ALL=OFF -DBUILD_EXT_UNHOOK=ON $(COMMON_GEN_X86)
+
+meterpreter-ext-unhook-x86-build:
+	@cmake --build workspace/build/mingw-x86-ext-unhook $(COMMON_BUILD)
+
+meterpreter-ext-unhook-x64: meterpreter-ext-unhook-x64-gen meterpreter-ext-unhook-x64-build
+
+meterpreter-ext-unhook-x64-gen:
+	@cmake -S workspace -B workspace/build/mingw-x64-ext-unhook -DBUILD_ALL=OFF -DBUILD_EXT_UNHOOK=ON $(COMMON_GEN_X64)
+
+meterpreter-ext-unhook-x64-build:
+	@cmake --build workspace/build/mingw-x64-ext-unhook $(COMMON_BUILD)
+
+### Kiwi
+
+meterpreter-ext-kiwi: meterpreter-ext-kiwi-x86 meterpreter-ext-kiwi-x64
+
+meterpreter-ext-kiwi-x86: meterpreter-ext-kiwi-x86-gen meterpreter-ext-kiwi-x86-build
+
+meterpreter-ext-kiwi-x86-gen:
+	@cmake -S workspace -B workspace/build/mingw-x86-ext-kiwi -DBUILD_ALL=OFF -DBUILD_EXT_KIWI=ON $(COMMON_GEN_X86)
+
+meterpreter-ext-kiwi-x86-build:
+	@cmake --build workspace/build/mingw-x86-ext-kiwi $(COMMON_BUILD)
+
+meterpreter-ext-kiwi-x64: meterpreter-ext-kiwi-x64-gen meterpreter-ext-kiwi-x64-build
+
+meterpreter-ext-kiwi-x64-gen:
+	@cmake -S workspace -B workspace/build/mingw-x64-ext-kiwi -DBUILD_ALL=OFF -DBUILD_EXT_KIWI=ON $(COMMON_GEN_X64)
+
+meterpreter-ext-kiwi-x64-build:
+	@cmake --build workspace/build/mingw-x64-ext-kiwi $(COMMON_BUILD)
+
+### PeInjector
+
+meterpreter-ext-peinjector: meterpreter-ext-peinjector-x86 meterpreter-ext-peinjector-x64
+
+meterpreter-ext-peinjector-x86: meterpreter-ext-peinjector-x86-gen meterpreter-ext-peinjector-x86-build
+
+meterpreter-ext-peinjector-x86-gen:
+	@cmake -S workspace -B workspace/build/mingw-x86-ext-peinjector -DBUILD_ALL=OFF -DBUILD_EXT_PEINJECTOR=ON $(COMMON_GEN_X86)
+
+meterpreter-ext-peinjector-x86-build:
+	@cmake --build workspace/build/mingw-x86-ext-peinjector $(COMMON_BUILD)
+
+meterpreter-ext-peinjector-x64: meterpreter-ext-peinjector-x64-gen meterpreter-ext-peinjector-x64-build
+
+meterpreter-ext-peinjector-x64-gen:
+	@cmake -S workspace -B workspace/build/mingw-x64-ext-peinjector -DBUILD_ALL=OFF -DBUILD_EXT_PEINJECTOR=ON $(COMMON_GEN_X64)
+
+meterpreter-ext-peinjector-x64-build:
+	@cmake --build workspace/build/mingw-x64-ext-peinjector $(COMMON_BUILD)
+
+##########################################################################################
+### Container-based Builds
+##########################################################################################
+
+docker:
+	@docker run -u $(ID):$(ID) -it -v ${PWD}:/meterpreter -w /meterpreter --rm $(DOCKER_CONTAINER) make
+
+docker-container:
+	@docker build ../../docker -t $(DOCKER_CONTAINER)
+
+docker-shell:
+	@docker run -u $(ID):$(ID) -it -v ${PWD}:/meterpreter -w /meterpreter --rm $(DOCKER_CONTAINER) bash
+
+docker-x64:
+	@docker run -u $(ID):$(ID) -it -v ${PWD}:/meterpreter -w /meterpreter --rm $(DOCKER_CONTAINER) make meterpreter-x64
+
+docker-x86:
+	@docker run -u $(ID):$(ID) -it -v ${PWD}:/meterpreter -w /meterpreter --rm $(DOCKER_CONTAINER) make meterpreter-x86
+
+docker-metsrv:
+	@docker run -u $(ID):$(ID) -it -v ${PWD}:/meterpreter -w /meterpreter --rm $(DOCKER_CONTAINER) make meterpreter-metsrv
+
+docker-metsrv-x86:
+	@docker run -u $(ID):$(ID) -it -v ${PWD}:/meterpreter -w /meterpreter --rm $(DOCKER_CONTAINER) make meterpreter-metsrv-x86
+
+docker-metsrv-x64:
+	@docker run -u $(ID):$(ID) -it -v ${PWD}:/meterpreter -w /meterpreter --rm $(DOCKER_CONTAINER) make meterpreter-metsrv-x64
+
+docker-ext-stdapi:
+	@docker run -u $(ID):$(ID) -it -v ${PWD}:/meterpreter -w /meterpreter --rm $(DOCKER_CONTAINER) make meterpreter-ext-stdapi
+
+docker-ext-stdapi-x86:
+	@docker run -u $(ID):$(ID) -it -v ${PWD}:/meterpreter -w /meterpreter --rm $(DOCKER_CONTAINER) make meterpreter-ext-stdapi-x86
+
+docker-ext-stdapi-x64:
+	@docker run -u $(ID):$(ID) -it -v ${PWD}:/meterpreter -w /meterpreter --rm $(DOCKER_CONTAINER) make meterpreter-ext-stdapi-x64
+
+docker-ext-priv:
+	@docker run -u $(ID):$(ID) -it -v ${PWD}:/meterpreter -w /meterpreter --rm $(DOCKER_CONTAINER) make meterpreter-ext-priv
+
+docker-ext-priv-x86:
+	@docker run -u $(ID):$(ID) -it -v ${PWD}:/meterpreter -w /meterpreter --rm $(DOCKER_CONTAINER) make meterpreter-ext-priv-x86
+
+docker-ext-priv-x64:
+	@docker run -u $(ID):$(ID) -it -v ${PWD}:/meterpreter -w /meterpreter --rm $(DOCKER_CONTAINER) make meterpreter-ext-priv-x64
+
+docker-ext-extapi:
+	@docker run -u $(ID):$(ID) -it -v ${PWD}:/meterpreter -w /meterpreter --rm $(DOCKER_CONTAINER) make meterpreter-ext-extapi
+
+docker-ext-extapi-x86:
+	@docker run -u $(ID):$(ID) -it -v ${PWD}:/meterpreter -w /meterpreter --rm $(DOCKER_CONTAINER) make meterpreter-ext-extapi-x86
+
+docker-ext-extapi-x64:
+	@docker run -u $(ID):$(ID) -it -v ${PWD}:/meterpreter -w /meterpreter --rm $(DOCKER_CONTAINER) make meterpreter-ext-extapi-x64
+
+docker-ext-incognito:
+	@docker run -u $(ID):$(ID) -it -v ${PWD}:/meterpreter -w /meterpreter --rm $(DOCKER_CONTAINER) make meterpreter-ext-incognito
+
+docker-ext-incognito-x86:
+	@docker run -u $(ID):$(ID) -it -v ${PWD}:/meterpreter -w /meterpreter --rm $(DOCKER_CONTAINER) make meterpreter-ext-incognito-x86
+
+docker-ext-incognito-x64:
+	@docker run -u $(ID):$(ID) -it -v ${PWD}:/meterpreter -w /meterpreter --rm $(DOCKER_CONTAINER) make meterpreter-ext-incognito-x64
+
+docker-ext-espia:
+	@docker run -u $(ID):$(ID) -it -v ${PWD}:/meterpreter -w /meterpreter --rm $(DOCKER_CONTAINER) make meterpreter-ext-espia
+
+docker-ext-espia-x86:
+	@docker run -u $(ID):$(ID) -it -v ${PWD}:/meterpreter -w /meterpreter --rm $(DOCKER_CONTAINER) make meterpreter-ext-espia-x86
+
+docker-ext-espia-x64:
+	@docker run -u $(ID):$(ID) -it -v ${PWD}:/meterpreter -w /meterpreter --rm $(DOCKER_CONTAINER) make meterpreter-ext-espia-x64
+
+docker-ext-lanattacks:
+	@docker run -u $(ID):$(ID) -it -v ${PWD}:/meterpreter -w /meterpreter --rm $(DOCKER_CONTAINER) make meterpreter-ext-lanattacks
+
+docker-ext-lanattacks-x86:
+	@docker run -u $(ID):$(ID) -it -v ${PWD}:/meterpreter -w /meterpreter --rm $(DOCKER_CONTAINER) make meterpreter-ext-lanattacks-x86
+
+docker-ext-lanattacks-x64:
+	@docker run -u $(ID):$(ID) -it -v ${PWD}:/meterpreter -w /meterpreter --rm $(DOCKER_CONTAINER) make meterpreter-ext-lanattacks-x64
+
+docker-ext-unhook:
+	@docker run -u $(ID):$(ID) -it -v ${PWD}:/meterpreter -w /meterpreter --rm $(DOCKER_CONTAINER) make meterpreter-ext-unhook
+
+docker-ext-unhook-x86:
+	@docker run -u $(ID):$(ID) -it -v ${PWD}:/meterpreter -w /meterpreter --rm $(DOCKER_CONTAINER) make meterpreter-ext-unhook-x86
+
+docker-ext-unhook-x64:
+	@docker run -u $(ID):$(ID) -it -v ${PWD}:/meterpreter -w /meterpreter --rm $(DOCKER_CONTAINER) make meterpreter-ext-unhook-x64
+
+docker-ext-winpmem:
+	@docker run -u $(ID):$(ID) -it -v ${PWD}:/meterpreter -w /meterpreter --rm $(DOCKER_CONTAINER) make meterpreter-ext-winpmem
+
+docker-ext-winpmem-x86:
+	@docker run -u $(ID):$(ID) -it -v ${PWD}:/meterpreter -w /meterpreter --rm $(DOCKER_CONTAINER) make meterpreter-ext-winpmem-x86
+
+docker-ext-winpmem-x64:
+	@docker run -u $(ID):$(ID) -it -v ${PWD}:/meterpreter -w /meterpreter --rm $(DOCKER_CONTAINER) make meterpreter-ext-winpmem-x64
+
+docker-ext-kiwi:
+	@docker run -u $(ID):$(ID) -it -v ${PWD}:/meterpreter -w /meterpreter --rm $(DOCKER_CONTAINER) make meterpreter-ext-kiwi
+
+docker-ext-kiwi-x86:
+	@docker run -u $(ID):$(ID) -it -v ${PWD}:/meterpreter -w /meterpreter --rm $(DOCKER_CONTAINER) make meterpreter-ext-kiwi-x86
+
+docker-ext-kiwi-x64:
+	@docker run -u $(ID):$(ID) -it -v ${PWD}:/meterpreter -w /meterpreter --rm $(DOCKER_CONTAINER) make meterpreter-ext-kiwi-x64
+
+docker-ext-peinjector:
+	@docker run -u $(ID):$(ID) -it -v ${PWD}:/meterpreter -w /meterpreter --rm $(DOCKER_CONTAINER) make meterpreter-ext-peinjector
+
+docker-ext-peinjector-x86:
+	@docker run -u $(ID):$(ID) -it -v ${PWD}:/meterpreter -w /meterpreter --rm $(DOCKER_CONTAINER) make meterpreter-ext-peinjector-x86
+
+docker-ext-peinjector-x64:
+	@docker run -u $(ID):$(ID) -it -v ${PWD}:/meterpreter -w /meterpreter --rm $(DOCKER_CONTAINER) make meterpreter-ext-peinjector-x64

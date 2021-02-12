@@ -3,7 +3,8 @@
  * @brief Wrapper functions for bridging native meterp calls to powershell
  */
 extern "C" {
-#include "../../common/common.h"
+#include "common.h"
+#include "common_metapi.h"
 #include "powershell_bindings.h"
 }
 
@@ -17,15 +18,17 @@ VOID MeterpreterInvoke(unsigned int isLocal, unsigned char* input, unsigned int 
 	packet.header = *(PacketHeader*)input;
 	packet.header.length = ntohl(packet.header.length);
 	packet.payload = (PUCHAR)(input + sizeof(PacketHeader));
-	packet.payloadLength = (ULONG)inputLength - sizeof(TlvHeader);
+	packet.payloadLength = (ULONG)inputLength - sizeof(PacketHeader);
 	packet.local = isLocal == 1;
 
 	dprintf("[PSH BINDING] Packet header length:  %u", packet.header.length);
 	dprintf("[PSH BINDING] Packet header type:    %u", packet.header.type);
 	dprintf("[PSH BINDING] Packet payload length: %u", packet.payloadLength);
 	dprintf("[PSH BINDING] Packet local flag:     %u", isLocal);
+	dprintf("[PSH BINDING] Request ID:            %s", met_api->packet.get_tlv_value_string(&packet, TLV_TYPE_REQUEST_ID));
+	dprintf("[PSH BINDING] Command ID:            %u", met_api->packet.get_tlv_value_uint(&packet, TLV_TYPE_COMMAND_ID));
 
-	command_handle(gRemote, &packet);
+	met_api->command.handle(gRemote, &packet);
 
 	if (packet.partner != NULL)
 	{
@@ -34,7 +37,9 @@ VOID MeterpreterInvoke(unsigned int isLocal, unsigned char* input, unsigned int 
 		*output = (unsigned char*)LocalAlloc(LPTR, packet.partner->payloadLength);
 		*outputLength = packet.partner->payloadLength;
 		memcpy(*output, packet.partner->payload, packet.partner->payloadLength);
-		packet_destroy(packet.partner);
+		dprintf("[PSH BINDING] Partner packet copied");
+		met_api->packet.destroy(packet.partner);
+		dprintf("[PSH BINDING] Partner packet destroyed");
 	}
 	else
 	{
@@ -42,4 +47,5 @@ VOID MeterpreterInvoke(unsigned int isLocal, unsigned char* input, unsigned int 
 		*output = NULL;
 		*outputLength = 0;
 	}
+	dprintf("[PSH BINDING] MeterpreterInvoke done.");
 }

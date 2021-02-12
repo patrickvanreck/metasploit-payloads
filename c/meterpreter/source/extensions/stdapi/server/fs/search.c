@@ -11,28 +11,35 @@
  */
 
 #include "precomp.h"
+#include "common_metapi.h"
 #include "fs.h"
 #include "fs_local.h"
 #include "search.h"
+
+#ifdef __MINGW32__
+const GUID MET_DBGUID_DEFAULT = {0xc8b521fb,0x5cf3,0x11ce,{0xad,0xe5,0x00,0xaa,0x00,0x44,0x77,0x3d}};
+#else
+#define MET_DBGUID_DEFAULT DBGUID_DEFAULT
+#endif
 
 /*
  * Helper function to add a search result to the response packet.
  */
 VOID search_add_result(Packet * pResponse, wchar_t *directory, wchar_t *fileName, DWORD dwFileSize)
 {
-	char *dir = wchar_to_utf8(directory);
-	char *file = wchar_to_utf8(fileName);
+	char *dir = met_api->string.wchar_to_utf8(directory);
+	char *file = met_api->string.wchar_to_utf8(fileName);
 
 	dprintf("[SEARCH] Found: %s\\%s", dir, file);
 
 	if (dir && file) {
-		Packet* group = packet_create_group();
+		Packet* group = met_api->packet.create_group();
 
-		packet_add_tlv_string(group, TLV_TYPE_FILE_PATH, dir);
-		packet_add_tlv_string(group, TLV_TYPE_FILE_NAME, file);
-		packet_add_tlv_uint(group, TLV_TYPE_FILE_SIZE, dwFileSize);
+		met_api->packet.add_tlv_string(group, TLV_TYPE_FILE_PATH, dir);
+		met_api->packet.add_tlv_string(group, TLV_TYPE_FILE_NAME, file);
+		met_api->packet.add_tlv_uint(group, TLV_TYPE_FILE_SIZE, dwFileSize);
 
-		packet_add_group(pResponse, TLV_TYPE_SEARCH_RESULTS, group);
+		met_api->packet.add_group(pResponse, TLV_TYPE_SEARCH_RESULTS, group);
 	}
 
 	free(dir);
@@ -318,7 +325,6 @@ HRESULT wds_execute(ICommand * pCommand, Packet * pResponse)
 					directory = L"";
 					fileName  = directory;
 				}
-
 				search_add_result(pResponse, directory, fileName, rowSearchResults.dwSizeValue);
 			}
 
@@ -583,7 +589,7 @@ DWORD wds3_search(WDS_INTERFACE * pWDSInterface, wchar_t * wpProtocol, wchar_t *
 		OutputDebugStringW(wpSQL);
 #endif
 
-		hr = ICommandText_SetCommandText(pCommandText, &DBGUID_DEFAULT, wpSQL);
+		hr = ICommandText_SetCommandText(pCommandText, &MET_DBGUID_DEFAULT, wpSQL);
 		if (FAILED(hr)) {
 			BREAK_WITH_ERROR("[SEARCH] wds3_search: ICommandText_SetCommandText Failed", hr);
 		}
@@ -757,10 +763,10 @@ DWORD search(WDS_INTERFACE * pWDSInterface, wchar_t *directory, SEARCH_OPTIONS *
 	return dwResult;
 }
 
-VOID search_all_drives(WDS_INTERFACE *pWDSInterface, SEARCH_OPTIONS *options, Packet *pResponse)
+DWORD search_all_drives(WDS_INTERFACE *pWDSInterface, SEARCH_OPTIONS *options, Packet *pResponse) //!!! VOID -> DWORD
 {
 	DWORD dwLogicalDrives = GetLogicalDrives();
-
+	DWORD dwResult;
 	for (wchar_t index = L'a'; index <= L'z'; index++)
 	{
 		if (dwLogicalDrives & (1 << (index-L'a')))
@@ -775,16 +781,17 @@ VOID search_all_drives(WDS_INTERFACE *pWDSInterface, SEARCH_OPTIONS *options, Pa
 			if (dwType == DRIVE_FIXED || dwType == DRIVE_REMOTE)
 			{
 				options->rootDirectory = drive;
-
+				
 				dprintf("[SEARCH] request_fs_search. Searching drive %S (type=%d)...",
 					options->rootDirectory, dwType);
 
-				search(pWDSInterface, NULL, options, pResponse);
+				dwResult = search(pWDSInterface, NULL, options, pResponse);
 			}
 		}
 	}
 
 	options->rootDirectory = NULL;
+	return dwResult;
 }
 
 /*
@@ -799,17 +806,17 @@ DWORD request_fs_search(Remote * pRemote, Packet * pPacket)
 
 	dprintf("[SEARCH] request_fs_search. Starting.");
 
-	pResponse = packet_create_response(pPacket);
+	pResponse = met_api->packet.create_response(pPacket);
 	if (!pResponse) {
 		dprintf("[SEARCH] request_fs_search: pResponse == NULL");
 		return ERROR_INVALID_HANDLE;
 	}
 
-	options.rootDirectory = utf8_to_wchar(
-		packet_get_tlv_value_string(pPacket, TLV_TYPE_SEARCH_ROOT));
+	options.rootDirectory = met_api->string.utf8_to_wchar(
+		met_api->packet.get_tlv_value_string(pPacket, TLV_TYPE_SEARCH_ROOT));
 
-	options.glob = utf8_to_wchar(
-		packet_get_tlv_value_string(pPacket, TLV_TYPE_SEARCH_GLOB));
+	options.glob = met_api->string.utf8_to_wchar(
+		met_api->packet.get_tlv_value_string(pPacket, TLV_TYPE_SEARCH_GLOB));
 
 	if (options.rootDirectory && wcslen(options.rootDirectory) == 0) {
 		free(options.rootDirectory);
@@ -829,7 +836,7 @@ DWORD request_fs_search(Remote * pRemote, Packet * pPacket)
 
 	dprintf("[SEARCH] root: '%S' glob: '%S'", options.rootDirectory, options.glob);
 
-	options.bResursive = packet_get_tlv_value_bool(pPacket, TLV_TYPE_SEARCH_RECURSE);
+	options.bResursive = met_api->packet.get_tlv_value_bool(pPacket, TLV_TYPE_SEARCH_RECURSE);
 
 	if (!options.glob) {
 		options.glob = L"*.*";
@@ -839,9 +846,16 @@ DWORD request_fs_search(Remote * pRemote, Packet * pPacket)
 
 	if (!options.rootDirectory)
 	{
-		search_all_drives(&WDSInterface, &options, pResponse);
-		wds3_search(&WDSInterface, L"iehistory", NULL, &options, pResponse);
-		wds3_search(&WDSInterface, L"mapi", NULL, &options, pResponse);
+		DWORD dwResult;
+		dwResult = search_all_drives(&WDSInterface, &options, pResponse);
+		if (dwResult != ERROR_SUCCESS)
+		{
+			dwResult = wds3_search(&WDSInterface, L"iehistory", NULL, &options, pResponse);
+		}
+		if (dwResult != ERROR_SUCCESS)
+		{
+			dwResult = wds3_search(&WDSInterface, L"mapi", NULL, &options, pResponse);
+		}
 	}
 	else
 	{
@@ -863,7 +877,7 @@ DWORD request_fs_search(Remote * pRemote, Packet * pPacket)
 
 	if (pResponse)
 	{
-		dwResult = packet_transmit_response(dwResult, pRemote, pResponse);
+		dwResult = met_api->packet.transmit_response(dwResult, pRemote, pResponse);
 	}
 
 	wds_shutdown(&WDSInterface);

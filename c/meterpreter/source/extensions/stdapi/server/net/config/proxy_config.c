@@ -1,6 +1,6 @@
 #include "precomp.h"
+#include "common_metapi.h"
 
-#ifdef _WIN32
 typedef struct
 {
     BOOL    fAutoDetect;
@@ -12,7 +12,6 @@ typedef struct
 typedef BOOL (WINAPI * PWINHTTPGETIEPROXYCONFIGFORCURRENTUSER)(
 	WINHTTP_CURRENT_USER_IE_PROXY_CONFIG *pProxyConfig
 );
-#endif
 
 /*!
  * @brief Get the current Internet Explorer proxy configuration.
@@ -28,9 +27,8 @@ typedef BOOL (WINAPI * PWINHTTPGETIEPROXYCONFIGFORCURRENTUSER)(
 DWORD request_net_config_get_proxy_config(Remote *remote, Packet *packet)
 {
 	DWORD dwResult = ERROR_NOT_SUPPORTED;
-	Packet *response = packet_create_response(packet);
+	Packet *response = met_api->packet.create_response(packet);
 
-#ifdef _WIN32
 	HMODULE hWinHttp = NULL;
 	PWINHTTPGETIEPROXYCONFIGFORCURRENTUSER pProxyFun = NULL;
 	WINHTTP_CURRENT_USER_IE_PROXY_CONFIG proxyConfig;
@@ -52,20 +50,20 @@ DWORD request_net_config_get_proxy_config(Remote *remote, Packet *packet)
 			break;
 		}
 
-		packet_add_tlv_bool(response, TLV_TYPE_PROXY_CFG_AUTODETECT, proxyConfig.fAutoDetect);
+		met_api->packet.add_tlv_bool(response, TLV_TYPE_PROXY_CFG_AUTODETECT, proxyConfig.fAutoDetect);
 
 		if (proxyConfig.lpszAutoConfigUrl) {
-			packet_add_tlv_wstring(response, TLV_TYPE_PROXY_CFG_AUTOCONFIGURL, proxyConfig.lpszAutoConfigUrl);
+			met_api->packet.add_tlv_wstring(response, TLV_TYPE_PROXY_CFG_AUTOCONFIGURL, proxyConfig.lpszAutoConfigUrl);
 			GlobalFree((HGLOBAL)proxyConfig.lpszAutoConfigUrl);
 		}
 
 		if (proxyConfig.lpszProxy) {
-			packet_add_tlv_wstring(response, TLV_TYPE_PROXY_CFG_PROXY, proxyConfig.lpszProxy);
+			met_api->packet.add_tlv_wstring(response, TLV_TYPE_PROXY_CFG_PROXY, proxyConfig.lpszProxy);
 			GlobalFree((HGLOBAL)proxyConfig.lpszProxy);
 		}
 
 		if (proxyConfig.lpszProxyBypass) {
-			packet_add_tlv_wstring(response, TLV_TYPE_PROXY_CFG_PROXYBYPASS, proxyConfig.lpszProxyBypass);
+			met_api->packet.add_tlv_wstring(response, TLV_TYPE_PROXY_CFG_PROXYBYPASS, proxyConfig.lpszProxyBypass);
 			GlobalFree((HGLOBAL)proxyConfig.lpszProxyBypass);
 		}
 
@@ -76,11 +74,8 @@ DWORD request_net_config_get_proxy_config(Remote *remote, Packet *packet)
 	if (hWinHttp != NULL) {
 		FreeLibrary(hWinHttp);
 	}
-#else
-	// no support for this on "nix"
-#endif
 
-	packet_transmit_response(dwResult, remote, response);
+	met_api->packet.transmit_response(dwResult, remote, response);
 
 	return dwResult;
 }

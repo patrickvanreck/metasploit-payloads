@@ -8,6 +8,7 @@
 #include "elevator.h"
 #include "namedpipeservice.h"
 #include "tokendup.h"
+#include "common.h"
 
 // define this as we are going to be injected via LoadRemoteLibraryR
 #define REFLECTIVEDLLINJECTION_VIA_LOADREMOTELIBRARYR
@@ -15,7 +16,7 @@
 // define this as we want to use our own DllMain function
 #define REFLECTIVEDLLINJECTION_CUSTOM_DLLMAIN
 
-// include the Reflectiveloader() function
+#define RDIDLL_NOEXPORT
 #include "../ReflectiveDLLInjection/dll/src/ReflectiveLoader.c"
 
 /*

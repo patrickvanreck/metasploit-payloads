@@ -1,23 +1,20 @@
-#### Build Status
-
- * `master` Windows x86 and x64: [![Windows Meterpreter Build Status](https://ci.metasploit.com/buildStatus/icon?job=metasploit-payloads-win)](https://ci.metasploit.com/job/metasploit-payloads-win/)
- * `master` Linux x86: [![Linux Meterpreter Build Status](https://travis-ci.org/rapid7/metasploit-payloads.svg)](https://travis-ci.org/rapid7/metasploit-payloads)
-
 metasploit-payloads >
 =====================
 
-This is a new unified repository for different Metasploit Framework payloads, which merges these repositories:
+Appveyor build status: [![Build Status](https://ci.appveyor.com/api/projects/status/github/rapid7/metasploit-payloads)](https://ci.appveyor.com/project/appveyor-r7/metasploit-payloads)
 
- * [C Windows/Linux Meterpreters][csource]
- * [Java/Android Meterpreters and Payloads][javasource]
- * [Python/PHP Meterpreters][frameworksource]
+This is a unified repository for different Metasploit Framework payloads, which merges these repositories:
+
+ * [C Windows Meterpreter][csource]
+ * [Java and Android Meterpreter and Payloads][javasource]
+ * [Python and PHP Meterpreter][frameworksource]
+
+An alternate cross-platform C Meterpreter, called Mettle, is developed at https://github.com/rapid7/mettle
 
 See the individual directories for meterpreter-specific README, build instructions and license details:
 
  * [C Windows/Linux Meterpreters][creadme]
  * [Java/Android Meterpreters and Payloads][javareadme]
- * ... more to come ...
-
 
   [csource]: https://github.com/rapid7/meterpreter
   [creadme]: https://github.com/rapid7/metasploit-payloads/tree/master/c/meterpreter
