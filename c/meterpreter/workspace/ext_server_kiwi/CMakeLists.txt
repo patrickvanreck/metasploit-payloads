@@ -46,6 +46,10 @@ else()
         '-D__success=DISCARD'
         '-D__FUNCTION__=""'
         '-D__struct_bcount=DISCARD'
+        '-D__nullterminated=SAL__nullterminated'
+        '-D__in_range=__RPC__in_range'
+        '-D__callback=SAL__callback'
+        '-D__deref_in_bcount_opt=SAL__deref_in_bcount_opt'
     )
 endif()
 
@@ -64,6 +68,7 @@ file(GLOB SRC_FILES
     ${SRC_DIR}/mimikatz/mimikatz/modules/*.c
     ${SRC_DIR}/mimikatz/mimikatz/modules/crypto/*.c
     ${SRC_DIR}/mimikatz/mimikatz/modules/dpapi/*.c
+    ${SRC_DIR}/mimikatz/mimikatz/modules/misc/*.c
     ${SRC_DIR}/mimikatz/mimikatz/modules/dpapi/packages/*.c
     ${SRC_DIR}/mimikatz/mimikatz/modules/kerberos/*.c
     ${SRC_DIR}/mimikatz/mimikatz/modules/lsadump/*.c
@@ -106,6 +111,10 @@ set(LINK_LIBS
     cabinet
     dnsapi
     version
+    wbemuuid
+    delayimp
+    odbc32
+    mpr
 )
 
 if(MSVC)
@@ -128,9 +137,10 @@ set(LINK_LIBS
     ${KIWI_LIB_DIR}/samlib.lib
     ${KIWI_LIB_DIR}/winsta.lib
     ${KIWI_LIB_DIR}/advapi32.hash.lib
+    ${KIWI_LIB_DIR}/bcrypt.lib
 )
 
-target_link_libraries(${PROJECT_NAME} ${LINK_LIBS})
+target_link_libraries(${PROJECT_NAME} ${LINK_LIBS} ${MET_RDI_ASM})
 if(MSVC)
     target_link_options(${PROJECT_NAME} PUBLIC "/ignore:4070")
 endif()

@@ -231,7 +231,18 @@ static void config_create(Remote* remote, LPBYTE uuid, MetsrvConfig** config, LP
 	memcpy(sess->uuid, uuid == NULL ? remote->orig_config->session.uuid : uuid, UUID_SIZE);
 	// session GUID should persist across migration
 	memcpy(sess->session_guid, remote->orig_config->session.session_guid, sizeof(GUID));
-	sess->expiry = remote->sess_expiry_end - current_unix_timestamp();
+#ifdef DEBUGTRACE
+	memcpy(sess->log_path, remote->orig_config->session.log_path, LOG_PATH_SIZE);
+
+#endif
+	if (remote->sess_expiry_end)
+	{
+		sess->expiry = remote->sess_expiry_end - current_unix_timestamp();
+	}
+	else
+	{
+		sess->expiry = 0;
+	}
 	sess->exit_func = EXITFUNC_THREAD; // migration we default to this.
 
 	Transport* current = remote->transport;
@@ -345,7 +356,14 @@ DWORD server_setup(MetsrvConfig* config)
 
 			remote->sess_expiry_time = config->session.expiry;
 			remote->sess_start_time = current_unix_timestamp();
-			remote->sess_expiry_end = remote->sess_start_time + config->session.expiry;
+			if (remote->sess_expiry_time)
+			{
+				remote->sess_expiry_end = remote->sess_start_time + remote->sess_expiry_time;
+			}
+			else
+			{
+				remote->sess_expiry_end = 0;
+			}
 
 			dprintf("[DISPATCH] Session going for %u seconds from %u to %u", remote->sess_expiry_time, remote->sess_start_time, remote->sess_expiry_end);
 
@@ -408,10 +426,10 @@ DWORD server_setup(MetsrvConfig* config)
 			// Save the initial session/station/desktop names...
 			remote->orig_sess_id = server_sessionid();
 			remote->curr_sess_id = remote->orig_sess_id;
-			GetUserObjectInformation(GetProcessWindowStation(), UOI_NAME, &stationName, 256, NULL);
+			GetUserObjectInformationA(GetProcessWindowStation(), UOI_NAME, &stationName, 256, NULL);
 			remote->orig_station_name = _strdup(stationName);
 			remote->curr_station_name = _strdup(stationName);
-			GetUserObjectInformation(GetThreadDesktop(GetCurrentThreadId()), UOI_NAME, &desktopName, 256, NULL);
+			GetUserObjectInformationA(GetThreadDesktop(GetCurrentThreadId()), UOI_NAME, &desktopName, 256, NULL);
 			remote->orig_desktop_name = _strdup(desktopName);
 			remote->curr_desktop_name = _strdup(desktopName);
 

@@ -40,7 +40,7 @@ public class Loader implements ExtensionLoader {
     }
 
     public void load(CommandManager mgr) throws Exception {
-        mgr.registerCommand(CommandId.CORE_CHANNEL_OPEN, stdapi_channel_open.class);
+        mgr.registerCommand(CommandId.CORE_CHANNEL_OPEN, stdapi_channel_open.class, V1_2, V1_15);
         mgr.registerCommand(CommandId.STDAPI_FS_CHDIR, stdapi_fs_chdir.class);
         mgr.registerCommand(CommandId.STDAPI_FS_DELETE_DIR, stdapi_fs_delete_dir.class);
         mgr.registerCommand(CommandId.STDAPI_FS_DELETE_FILE, stdapi_fs_delete_file.class);
@@ -58,6 +58,8 @@ public class Loader implements ExtensionLoader {
         mgr.registerCommand(CommandId.STDAPI_NET_CONFIG_GET_INTERFACES, stdapi_net_config_get_interfaces.class, V1_4, V1_6);
         mgr.registerCommand(CommandId.STDAPI_NET_CONFIG_GET_ROUTES, stdapi_net_config_get_routes.class, V1_4);
         mgr.registerCommand(CommandId.STDAPI_NET_SOCKET_TCP_SHUTDOWN, stdapi_net_socket_tcp_shutdown.class, V1_2, V1_3);
+        mgr.registerCommand(CommandId.STDAPI_NET_RESOLVE_HOST, stdapi_net_resolve_host.class);
+        mgr.registerCommand(CommandId.STDAPI_NET_RESOLVE_HOSTS, stdapi_net_resolve_hosts.class);
         mgr.registerCommand(CommandId.STDAPI_SYS_CONFIG_GETUID, stdapi_sys_config_getuid.class);
         mgr.registerCommand(CommandId.STDAPI_SYS_CONFIG_GETENV, stdapi_sys_config_getenv.class);
         mgr.registerCommand(CommandId.STDAPI_SYS_CONFIG_SYSINFO, stdapi_sys_config_sysinfo.class);
@@ -69,5 +71,6 @@ public class Loader implements ExtensionLoader {
         mgr.registerCommand(CommandId.STDAPI_UI_SEND_MOUSE, stdapi_ui_send_mouse.class, V1_4);
         mgr.registerCommand(CommandId.STDAPI_UI_SEND_KEYEVENT, stdapi_ui_send_keyevent.class, V1_4);
         mgr.registerCommand(CommandId.STDAPI_WEBCAM_AUDIO_RECORD, stdapi_webcam_audio_record.class, V1_4);
+        mgr.registerCommand(CommandId.STDAPI_SYS_PROCESS_GETPID, stdapi_sys_process_getpid.class, V1_5, V1_9);
     }
 }

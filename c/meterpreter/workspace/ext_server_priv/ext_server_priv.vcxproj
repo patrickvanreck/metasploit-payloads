@@ -128,7 +128,7 @@
     <ClCompile>
       <Optimization>MinSpace</Optimization>
       <InlineFunctionExpansion>OnlyExplicitInline</InlineFunctionExpansion>
-      <AdditionalIncludeDirectories>..\..\source\ReflectiveDLLInjection\common;..\..\source\extensions\priv\server;..\..\source\common;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\..\source\extensions\kiwi\mimikatz\modules\rpc;..\..\source\extensions\kiwi\mimikatz\inc;..\..\source\ReflectiveDLLInjection\common;..\..\source\extensions\priv\server;..\..\source\common;..\..\source\dump_sam;..\..\workspace\ext_server_priv;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;_USRDLL;EXT_SERVER_PRIV_EXPORTS;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <StringPooling>true</StringPooling>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
@@ -152,7 +152,7 @@
       <Culture>0x0409</Culture>
     </ResourceCompile>
     <Link>
-      <AdditionalDependencies>psapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>psapi.lib;rpcrt4.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <SuppressStartupBanner>true</SuppressStartupBanner>
       <DelayLoadDLLs>
@@ -170,6 +170,7 @@
       <ModuleDefinitionFile>$(ProjectDir)..\..\source\def\extension.def</ModuleDefinitionFile>
       <AdditionalOptions>/ignore:4070 %(AdditionalOptions)</AdditionalOptions>
       <GenerateDebugInformation>false</GenerateDebugInformation>
+      <ImageHasSafeExceptionHandlers>No</ImageHasSafeExceptionHandlers>
     </Link>
     <Bscmake>
       <SuppressStartupBanner>true</SuppressStartupBanner>
@@ -180,6 +181,13 @@
 IF NOT EXIST "$(ProjectDir)..\..\output\" mkdir "$(ProjectDir)..\..\output\"
 copy /y "$(TargetDir)$(TargetFileName)" "$(ProjectDir)..\..\output\"</Command>
     </PostBuildEvent>
+    <PreBuildEvent>
+      <Command>msbuild.exe /target:Build /property:PlatformToolset=$(PlatformToolset);Configuration=Release;Platform=Win32 ..\dump_sam\dump_sam.sln
+msbuild.exe /target:Build /property:PlatformToolset=$(PlatformToolset);Configuration=Release;Platform=x64 ..\dump_sam\dump_sam.sln</Command>
+    </PreBuildEvent>
+    <PreBuildEvent>
+      <Message>Build the dump_sam solution</Message>
+    </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <Midl>
@@ -194,7 +202,7 @@ copy /y "$(TargetDir)$(TargetFileName)" "$(ProjectDir)..\..\output\"</Command>
     <ClCompile>
       <Optimization>MinSpace</Optimization>
       <InlineFunctionExpansion>OnlyExplicitInline</InlineFunctionExpansion>
-      <AdditionalIncludeDirectories>..\..\source\ReflectiveDLLInjection\common;..\..\source\extensions\priv\server;..\..\source\common;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\..\source\extensions\kiwi\mimikatz\modules\rpc;..\..\source\extensions\kiwi\mimikatz\inc;..\..\source\ReflectiveDLLInjection\common;..\..\source\extensions\priv\server;..\..\source\common;..\..\source\dump_sam;..\..\workspace\ext_server_priv;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>DEBUGTRACE;WIN32;NDEBUG;_WINDOWS;_USRDLL;EXT_SERVER_PRIV_EXPORTS;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <StringPooling>true</StringPooling>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
@@ -218,7 +226,7 @@ copy /y "$(TargetDir)$(TargetFileName)" "$(ProjectDir)..\..\output\"</Command>
       <Culture>0x0409</Culture>
     </ResourceCompile>
     <Link>
-      <AdditionalDependencies>psapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>psapi.lib;rpcrt4.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <SuppressStartupBanner>true</SuppressStartupBanner>
       <DelayLoadDLLs>
@@ -236,6 +244,7 @@ copy /y "$(TargetDir)$(TargetFileName)" "$(ProjectDir)..\..\output\"</Command>
       <ModuleDefinitionFile>$(ProjectDir)..\..\source\def\extension.def</ModuleDefinitionFile>
       <AdditionalOptions>/ignore:4070 %(AdditionalOptions)</AdditionalOptions>
       <GenerateDebugInformation>false</GenerateDebugInformation>
+      <ImageHasSafeExceptionHandlers>No</ImageHasSafeExceptionHandlers>
     </Link>
     <Bscmake>
       <SuppressStartupBanner>true</SuppressStartupBanner>
@@ -244,8 +253,15 @@ copy /y "$(TargetDir)$(TargetFileName)" "$(ProjectDir)..\..\output\"</Command>
     <PostBuildEvent>
       <Command>editbin.exe /NOLOGO /OSVERSION:5.0 /SUBSYSTEM:WINDOWS,4.0 "$(TargetDir)$(TargetFileName)" &gt; NUL
 IF NOT EXIST "$(ProjectDir)..\..\output\" mkdir "$(ProjectDir)..\..\output\"
-copy /y "$(TargetDir)$(TargetFileName)" "$(ProjectDir)..\..\output\"</Command>
+copy /y "$(TargetDir)$(TargetFileName)" "$(ProjectDir)..\..\output\$(TargetName).debug$(TargetExt)"</Command>
     </PostBuildEvent>
+    <PreBuildEvent>
+      <Command>msbuild.exe /target:Build /property:PlatformToolset=$(PlatformToolset);Configuration=Debug;Platform=Win32 ..\dump_sam\dump_sam.sln
+msbuild.exe /target:Build /property:PlatformToolset=$(PlatformToolset);Configuration=Debug;Platform=x64 ..\dump_sam\dump_sam.sln</Command>
+    </PreBuildEvent>
+    <PreBuildEvent>
+      <Message>Build the dump_sam solution</Message>
+    </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='r7_release|Win32'">
     <Midl>
@@ -260,7 +276,7 @@ copy /y "$(TargetDir)$(TargetFileName)" "$(ProjectDir)..\..\output\"</Command>
     <ClCompile>
       <Optimization>MinSpace</Optimization>
       <InlineFunctionExpansion>OnlyExplicitInline</InlineFunctionExpansion>
-      <AdditionalIncludeDirectories>..\..\source\ReflectiveDLLInjection\common;..\..\source\extensions\priv\server;..\..\source\common;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\..\source\extensions\kiwi\mimikatz\modules\rpc;..\..\source\extensions\kiwi\mimikatz\inc;..\..\source\ReflectiveDLLInjection\common;..\..\source\extensions\priv\server;..\..\source\common;..\..\source\dump_sam;..\..\workspace\ext_server_priv;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;_USRDLL;EXT_SERVER_PRIV_EXPORTS;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <StringPooling>true</StringPooling>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
@@ -284,7 +300,7 @@ copy /y "$(TargetDir)$(TargetFileName)" "$(ProjectDir)..\..\output\"</Command>
       <Culture>0x0409</Culture>
     </ResourceCompile>
     <Link>
-      <AdditionalDependencies>psapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>psapi.lib;rpcrt4.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <SuppressStartupBanner>true</SuppressStartupBanner>
       <DelayLoadDLLs>
@@ -302,6 +318,7 @@ copy /y "$(TargetDir)$(TargetFileName)" "$(ProjectDir)..\..\output\"</Command>
       <ModuleDefinitionFile>$(ProjectDir)..\..\source\def\extension.def</ModuleDefinitionFile>
       <AdditionalOptions>/ignore:4070 %(AdditionalOptions)</AdditionalOptions>
       <GenerateDebugInformation>false</GenerateDebugInformation>
+      <ImageHasSafeExceptionHandlers>No</ImageHasSafeExceptionHandlers>
     </Link>
     <Bscmake>
       <SuppressStartupBanner>true</SuppressStartupBanner>
@@ -312,6 +329,13 @@ copy /y "$(TargetDir)$(TargetFileName)" "$(ProjectDir)..\..\output\"</Command>
 IF NOT EXIST "$(ProjectDir)..\..\output\" mkdir "$(ProjectDir)..\..\output\"
 copy /y "$(TargetDir)$(TargetFileName)" "$(ProjectDir)..\..\output\"</Command>
     </PostBuildEvent>
+    <PreBuildEvent>
+      <Command>msbuild.exe /target:Build /property:PlatformToolset=$(PlatformToolset);Configuration=Release;Platform=Win32 ..\dump_sam\dump_sam.sln
+msbuild.exe /target:Build /property:PlatformToolset=$(PlatformToolset);Configuration=Release;Platform=x64 ..\dump_sam\dump_sam.sln</Command>
+    </PreBuildEvent>
+    <PreBuildEvent>
+      <Message>Build the dump_sam solution</Message>
+    </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <Midl>
@@ -326,7 +350,7 @@ copy /y "$(TargetDir)$(TargetFileName)" "$(ProjectDir)..\..\output\"</Command>
     <ClCompile>
       <Optimization>MaxSpeed</Optimization>
       <InlineFunctionExpansion>OnlyExplicitInline</InlineFunctionExpansion>
-      <AdditionalIncludeDirectories>..\..\source\ReflectiveDLLInjection\common;..\..\source\extensions\priv\server;..\..\source\common;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\..\source\extensions\kiwi\mimikatz\modules\rpc;..\..\source\extensions\kiwi\mimikatz\inc;..\..\source\ReflectiveDLLInjection\common;..\..\source\extensions\priv\server;..\..\source\common;..\..\source\dump_sam;..\..\workspace\ext_server_priv;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;_USRDLL;EXT_SERVER_PRIV_EXPORTS;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <StringPooling>true</StringPooling>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
@@ -349,7 +373,7 @@ copy /y "$(TargetDir)$(TargetFileName)" "$(ProjectDir)..\..\output\"</Command>
       <Culture>0x0409</Culture>
     </ResourceCompile>
     <Link>
-      <AdditionalDependencies>psapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>psapi.lib;rpcrt4.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <SuppressStartupBanner>true</SuppressStartupBanner>
       <AdditionalLibraryDirectories>
       </AdditionalLibraryDirectories>
@@ -368,6 +392,7 @@ copy /y "$(TargetDir)$(TargetFileName)" "$(ProjectDir)..\..\output\"</Command>
       <ModuleDefinitionFile>$(ProjectDir)..\..\source\def\extension.def</ModuleDefinitionFile>
       <AdditionalOptions>/ignore:4070 %(AdditionalOptions)</AdditionalOptions>
       <GenerateDebugInformation>false</GenerateDebugInformation>
+      <ImageHasSafeExceptionHandlers>No</ImageHasSafeExceptionHandlers>
     </Link>
     <Bscmake>
       <SuppressStartupBanner>true</SuppressStartupBanner>
@@ -378,6 +403,12 @@ copy /y "$(TargetDir)$(TargetFileName)" "$(ProjectDir)..\..\output\"</Command>
 IF NOT EXIST "$(ProjectDir)..\..\output\" mkdir "$(ProjectDir)..\..\output\"
 copy /y "$(TargetDir)$(TargetFileName)" "$(ProjectDir)..\..\output\"</Command>
     </PostBuildEvent>
+    <PreBuildEvent>
+      <Command>msbuild.exe /target:Build /property:PlatformToolset=$(PlatformToolset);Configuration=Release;Platform=x64 ..\dump_sam\dump_sam.sln</Command>
+    </PreBuildEvent>
+    <PreBuildEvent>
+      <Message>Build the dump_sam solution</Message>
+    </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <Midl>
@@ -392,7 +423,7 @@ copy /y "$(TargetDir)$(TargetFileName)" "$(ProjectDir)..\..\output\"</Command>
     <ClCompile>
       <Optimization>MaxSpeed</Optimization>
       <InlineFunctionExpansion>OnlyExplicitInline</InlineFunctionExpansion>
-      <AdditionalIncludeDirectories>..\..\source\ReflectiveDLLInjection\common;..\..\source\extensions\priv\server;..\..\source\common;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\..\source\extensions\kiwi\mimikatz\modules\rpc;..\..\source\extensions\kiwi\mimikatz\inc;..\..\source\ReflectiveDLLInjection\common;..\..\source\extensions\priv\server;..\..\source\common;..\..\source\dump_sam;..\..\workspace\ext_server_priv;..\..\source\extensions\kiwi\mimikatz\inc;..\..\source\extensions\kiwi\mimikatz\modules\rpc;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>DEBUGTRACE;WIN32;NDEBUG;_WINDOWS;_USRDLL;EXT_SERVER_PRIV_EXPORTS;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <StringPooling>true</StringPooling>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
@@ -415,7 +446,7 @@ copy /y "$(TargetDir)$(TargetFileName)" "$(ProjectDir)..\..\output\"</Command>
       <Culture>0x0409</Culture>
     </ResourceCompile>
     <Link>
-      <AdditionalDependencies>psapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>psapi.lib;rpcrt4.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <SuppressStartupBanner>true</SuppressStartupBanner>
       <AdditionalLibraryDirectories>
       </AdditionalLibraryDirectories>
@@ -434,6 +465,7 @@ copy /y "$(TargetDir)$(TargetFileName)" "$(ProjectDir)..\..\output\"</Command>
       <ModuleDefinitionFile>$(ProjectDir)..\..\source\def\extension.def</ModuleDefinitionFile>
       <AdditionalOptions>/ignore:4070 %(AdditionalOptions)</AdditionalOptions>
       <GenerateDebugInformation>false</GenerateDebugInformation>
+      <ImageHasSafeExceptionHandlers>No</ImageHasSafeExceptionHandlers>
     </Link>
     <Bscmake>
       <SuppressStartupBanner>true</SuppressStartupBanner>
@@ -442,8 +474,14 @@ copy /y "$(TargetDir)$(TargetFileName)" "$(ProjectDir)..\..\output\"</Command>
     <PostBuildEvent>
       <Command>editbin.exe /NOLOGO /OSVERSION:5.0 /SUBSYSTEM:WINDOWS,5.02 "$(TargetDir)$(TargetFileName)" &gt; NUL
 IF NOT EXIST "$(ProjectDir)..\..\output\" mkdir "$(ProjectDir)..\..\output\"
-copy /y "$(TargetDir)$(TargetFileName)" "$(ProjectDir)..\..\output\"</Command>
+copy /y "$(TargetDir)$(TargetFileName)" "$(ProjectDir)..\..\output\$(TargetName).debug$(TargetExt)"</Command>
     </PostBuildEvent>
+    <PreBuildEvent>
+      <Command>msbuild.exe /target:Build /property:PlatformToolset=$(PlatformToolset);Configuration=Debug;Platform=x64 ..\dump_sam\dump_sam.sln</Command>
+    </PreBuildEvent>
+    <PreBuildEvent>
+      <Message>Build the dump_sam solution</Message>
+    </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='r7_release|x64'">
     <Midl>
@@ -458,7 +496,7 @@ copy /y "$(TargetDir)$(TargetFileName)" "$(ProjectDir)..\..\output\"</Command>
     <ClCompile>
       <Optimization>MaxSpeed</Optimization>
       <InlineFunctionExpansion>OnlyExplicitInline</InlineFunctionExpansion>
-      <AdditionalIncludeDirectories>..\..\source\ReflectiveDLLInjection\common;..\..\source\extensions\priv\server;..\..\source\common;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\..\source\extensions\kiwi\mimikatz\modules\rpc;..\..\source\extensions\kiwi\mimikatz\inc;..\..\source\ReflectiveDLLInjection\common;..\..\source\extensions\priv\server;..\..\source\common;..\..\source\dump_sam;..\..\workspace\ext_server_priv;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;_USRDLL;EXT_SERVER_PRIV_EXPORTS;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <StringPooling>true</StringPooling>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
@@ -481,7 +519,7 @@ copy /y "$(TargetDir)$(TargetFileName)" "$(ProjectDir)..\..\output\"</Command>
       <Culture>0x0409</Culture>
     </ResourceCompile>
     <Link>
-      <AdditionalDependencies>psapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>psapi.lib;rpcrt4.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <SuppressStartupBanner>true</SuppressStartupBanner>
       <AdditionalLibraryDirectories>
       </AdditionalLibraryDirectories>
@@ -500,6 +538,7 @@ copy /y "$(TargetDir)$(TargetFileName)" "$(ProjectDir)..\..\output\"</Command>
       <ModuleDefinitionFile>$(ProjectDir)..\..\source\def\extension.def</ModuleDefinitionFile>
       <AdditionalOptions>/ignore:4070 %(AdditionalOptions)</AdditionalOptions>
       <GenerateDebugInformation>false</GenerateDebugInformation>
+      <ImageHasSafeExceptionHandlers>No</ImageHasSafeExceptionHandlers>
     </Link>
     <Bscmake>
       <SuppressStartupBanner>true</SuppressStartupBanner>
@@ -510,6 +549,12 @@ copy /y "$(TargetDir)$(TargetFileName)" "$(ProjectDir)..\..\output\"</Command>
 IF NOT EXIST "$(ProjectDir)..\..\output\" mkdir "$(ProjectDir)..\..\output\"
 copy /y "$(TargetDir)$(TargetFileName)" "$(ProjectDir)..\..\output\"</Command>
     </PostBuildEvent>
+    <PreBuildEvent>
+      <Command>msbuild.exe /target:Build /property:PlatformToolset=$(PlatformToolset);Configuration=Release;Platform=x64 ..\dump_sam\dump_sam.sln</Command>
+    </PreBuildEvent>
+    <PreBuildEvent>
+      <Message>Build the dump_sam solution</Message>
+    </PreBuildEvent>
   </ItemDefinitionGroup>
   <Choose>
     <When Condition="'$(Platform)'=='Win32'" />
@@ -521,26 +566,60 @@ copy /y "$(TargetDir)$(TargetFileName)" "$(ProjectDir)..\..\output\"</Command>
     </ProjectReference>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="..\..\source\extensions\kiwi\mimikatz\modules\rpc\kull_m_rpc_ms-efsr.h" />
+    <ClInclude Include="..\..\source\extensions\kiwi\mimikatz\modules\rpc\kull_m_rpc_ms-rprn.h" />
     <ClInclude Include="..\..\source\extensions\priv\defs.h" />
     <ClInclude Include="..\..\source\extensions\priv\elevate.h" />
     <ClInclude Include="..\..\source\extensions\priv\fs.h" />
     <ClInclude Include="..\..\source\extensions\priv\namedpipe.h" />
+    <ClInclude Include="..\..\source\extensions\priv\namedpipe_efs.h" />
+    <ClInclude Include="..\..\source\extensions\priv\namedpipe_printspooler.h" />
     <ClInclude Include="..\..\source\extensions\priv\namedpipe_rpcss.h" />
     <ClInclude Include="..\..\source\extensions\priv\passwd.h" />
     <ClInclude Include="..\..\source\extensions\priv\precomp.h" />
     <ClInclude Include="..\..\source\extensions\priv\priv.h" />
     <ClInclude Include="..\..\source\extensions\priv\service.h" />
     <ClInclude Include="..\..\source\extensions\priv\tokendup.h" />
+    <ClInclude Include="..\..\source\extensions\priv\resource.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="..\..\source\extensions\kiwi\mimikatz\modules\rpc\kull_m_rpc_ms-efsr_c.c" />
+    <ClCompile Include="..\..\source\extensions\kiwi\mimikatz\modules\rpc\kull_m_rpc_ms-rprn.c" />
     <ClCompile Include="..\..\source\extensions\priv\elevate.c" />
     <ClCompile Include="..\..\source\extensions\priv\fs.c" />
     <ClCompile Include="..\..\source\extensions\priv\namedpipe.c" />
+    <ClCompile Include="..\..\source\extensions\priv\namedpipe_efs.c" />
+    <ClCompile Include="..\..\source\extensions\priv\namedpipe_printspooler.c" />
     <ClCompile Include="..\..\source\extensions\priv\namedpipe_rpcss.c" />
     <ClCompile Include="..\..\source\extensions\priv\passwd.c" />
     <ClCompile Include="..\..\source\extensions\priv\priv.c" />
     <ClCompile Include="..\..\source\extensions\priv\service.c" />
     <ClCompile Include="..\..\source\extensions\priv\tokendup.c" />
+    <ClCompile Include="..\..\source\logging\logging.c" />
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="..\..\source\extensions\priv\priv.rc">
+      <PreprocessorDefinitions Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">DEBUGTRACE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">_WIN64;DEBUGTRACE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="'$(Configuration)|$(Platform)'=='r7_release|x64'">_WIN64;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="'$(Configuration)|$(Platform)'=='Release|x64'">_WIN64;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ResourceCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\..\output\dump_sam.x64.dll" />
+    <None Include="..\..\output\dump_sam.x86.dll" />
+  </ItemGroup>
+  <ItemGroup>
+    <MASM Include="..\..\source\ReflectiveDLLInjection\dll\src\GateTrampoline32.asm">
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='r7_release|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
+    </MASM>
+    <MASM Include="..\..\source\ReflectiveDLLInjection\dll\src\GateTrampoline64.asm">
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='r7_release|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">true</ExcludedFromBuild>
+    </MASM>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

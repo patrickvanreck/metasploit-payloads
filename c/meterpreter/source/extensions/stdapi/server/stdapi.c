@@ -69,6 +69,7 @@ Command customCommands[] =
 	COMMAND_REQ(COMMAND_ID_STDAPI_SYS_PROCESS_MEMORY_PROTECT, request_sys_process_memory_protect),
 	COMMAND_REQ(COMMAND_ID_STDAPI_SYS_PROCESS_MEMORY_LOCK, request_sys_process_memory_lock),
 	COMMAND_REQ(COMMAND_ID_STDAPI_SYS_PROCESS_MEMORY_UNLOCK, request_sys_process_memory_unlock),
+	COMMAND_REQ(COMMAND_ID_STDAPI_SYS_PROCESS_MEMORY_SEARCH, request_sys_process_memory_search),
 
 	// Thread
 	COMMAND_REQ(COMMAND_ID_STDAPI_SYS_PROCESS_THREAD_OPEN, request_sys_process_thread_open),
@@ -112,6 +113,7 @@ Command customCommands[] =
 	COMMAND_REQ(COMMAND_ID_STDAPI_SYS_CONFIG_STEAL_TOKEN, request_sys_config_steal_token),
 	COMMAND_REQ(COMMAND_ID_STDAPI_SYS_CONFIG_DROP_TOKEN, request_sys_config_drop_token),
 	COMMAND_REQ(COMMAND_ID_STDAPI_SYS_CONFIG_GETSID, request_sys_config_getsid),
+	COMMAND_REQ(COMMAND_ID_STDAPI_SYS_CONFIG_UPDATE_TOKEN, request_sys_config_update_token),
 
 	// Net
 	COMMAND_REQ(COMMAND_ID_STDAPI_NET_CONFIG_GET_ROUTES, request_net_config_get_routes),
@@ -177,7 +179,7 @@ Command customCommands[] =
 DWORD InitServerExtension(MetApi* api, Remote *remote)
 {
 	met_api = api;
-
+	SET_LOGGING_CONTEXT(api);
 	met_api->command.register_all( customCommands );
 
 	return ERROR_SUCCESS;

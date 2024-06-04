@@ -22,6 +22,7 @@ With the code checked out and the submodules updated, you're ready to run a buil
 
 ## Building - Windows on Windows
 Meterpreter currently supports being built with multiple versions of Visual Studio, including the free/community editions.
+Before building make sure to disable antivirus/windows defender.
 
 ### VS 2019
 Building with VS2019 works with any version, including community. If you have an installation already, just make sure you have the following extra bits installed:
@@ -34,41 +35,10 @@ Building with VS2019 works with any version, including community. If you have an
 If you don't have an installation ready, follow these steps:
 
 1. Install [Chocolatey](https://chocolatey.org).
-2. Create a file called `.vsconfig` somewhere on disk with the following contents:
+2. Install VS with all the required components by running the following command in Powershell:
   ```
-{
-    "version": "1.0",
-    "components": [
-        "Microsoft.VisualStudio.Component.CoreEditor",
-        "Microsoft.VisualStudio.Workload.CoreEditor",
-        "Microsoft.VisualStudio.Component.NuGet",
-        "Microsoft.VisualStudio.Component.Roslyn.Compiler",
-        "Microsoft.Component.MSBuild",
-        "Microsoft.VisualStudio.Component.TextTemplating",
-        "Microsoft.VisualStudio.Component.IntelliCode",
-        "Microsoft.VisualStudio.Component.VC.CoreIde",
-        "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
-        "Microsoft.VisualStudio.Component.Graphics.Tools",
-        "Microsoft.VisualStudio.Component.VC.DiagnosticTools",
-        "Microsoft.VisualStudio.Component.Windows10SDK.18362",
-        "Microsoft.VisualStudio.Component.Debugger.JustInTime",
-        "Microsoft.VisualStudio.Component.VC.Redist.14.Latest",
-        "Microsoft.VisualStudio.ComponentGroup.NativeDesktop.Core",
-        "Microsoft.VisualStudio.Component.VC.CMake.Project",
-        "Microsoft.VisualStudio.Component.VC.ATL",
-        "Microsoft.VisualStudio.Component.VC.ASAN",
-        "Microsoft.Component.VC.Runtime.UCRTSDK",
-        "Microsoft.VisualStudio.Workload.NativeDesktop",
-        "Microsoft.VisualStudio.Component.WinXP"
-    ]
-}
+choco install visualstudio2019community -y --package-parameters "--config C:\YOUR_PATH\metasploit-payloads\c\meterpreter\vs-configs\vs2019.vsconfig"
   ```
-3. Install VS with all the required components by running the following command in Powershell:
-  ```
-choco install visualstudio2019community -y --package-parameters "--config Path\To\Your\.vsconfig"
-  ```
-
-Note: A copy of this file is located in this repository under `c/meterpreter/vs-config/vs2019.vsconfig`.
 
 ### VS 2017
 Building with VS2017 works with any version, including community. If you have an installation already, just make sure you have the following extra bits installed:
@@ -81,23 +51,9 @@ Building with VS2017 works with any version, including community. If you have an
 If you don't have an installation ready, follow these steps:
 
 1. Install [Chocolatey](https://chocolatey.org).
-2. Create a file called `.vsconfig` somewhere on disk with the following contents:
+2. Install VS with all the required components by running the following command in Powershell:
   ```
-{
-    "version": "1.0",
-    "components": [
-        "Microsoft.VisualStudio.Workload.NativeDesktop",
-        "microsoft.visualstudio.component.debugger.justintime",
-        "microsoft.visualstudio.component.vc.diagnostictools",
-        "microsoft.visualstudio.component.vc.cmake.project",
-        "microsoft.visualstudio.component.vc.atl",
-        "microsoft.visualstudio.componentgroup.nativedesktop.winxp"
-    ]
-}
-  ```
-3. Install VS with all the required components by running the following command in Powershell:
-  ```
-choco install visualstudio2017community -y --package-parameters "--config Path\To\Your\.vsconfig"
+choco install visualstudio2017community -y --package-parameters "--config C:\YOUR_PATH\metasploit-payloads\c\meterpreter\vs-configs\vs2017.vsconfig"
   ```
 
 Note: A copy of this file is located in this repository under `c/meterpreter/vs-config/vs2017.vsconfig`.
@@ -128,7 +84,7 @@ meterpreter source is located. From here you can:
 * Build the x64 version by running: `make x64`
 * Build both x86 and x64 versions by running: `make`
 
-If you want to build binaries with the `v120_xp` toolset instead of `v141_xp` while using VS2017 or VS2019, you must first install VS2013 as shown above. Then, pass `v120_xp` as a parameter when running `make` (eg. `make v120_xp x64`).
+If you want to build binaries with the `v120_xp` toolset instead of `v141_xp` while using VS2017 or VS2019, you must first install VS2013 as shown above. Then, pass `v120_xp` as a parameter when running `make` (eg. `make v120_xp x64`). The Rapid7 build automation uses v120_xp to build the distributed binaries, so projects must build with that platform toolset.
 
 The compiled binaries are written to the `output` folder.
 
@@ -201,3 +157,33 @@ There is currently no automated testing for meterpreter, but we're working on it
 Once you've made changes and compiled a new .dll or .so, copy the contents of the output/ directory into your Metasploit Framework's `data/meterpreter/` directory.
 
 If you made any changes to `metsrv.dll` ensure that all extensions still load and function properly.
+
+# Debugging
+[Debugging wiki page](https://github.com/rapid7/metasploit-payloads/wiki/Debugging-Meterpreter(s))
+
+For debugging it helps to have two machines ready, one Windows (to be setup as described earlier to build meterpreter)
+and one Ubuntu (ths is where you would have your [framework dev envrionment](https://github.com/rapid7/metasploit-framework/wiki/Setting-Up-a-Metasploit-Development-Environment)), these can both be VMs.
+
+`git clone` this repo onto your framework development machine and then map it as a network drive to the Windows machine.
+Don't forget to run `git submodule init && git submodule update`.
+Once that's done you can load the project up in Visual Studio as described in the "Building - Windows on Windows" section of the Readme.
+
+To build in Debug mode all you need to do in the Visual Studio UI is select Debug from the configuration dropwdown (as opposed to Release or r7_Release).
+Now select Win32 or x64 depending on whether you want to build for 32 or 64 bit meterpreter (or both) and then (re)build the solution.
+
+Once you compile code, you need to link it to Framework so you can test it.  Because other people at R7 are super smart, this is not so bad.
+Go to a terminal in the payloads repo that can see both framework and payloads (I do this on my ubuntu machine)
+Run make install-windows
+```
+$ make install-windows
+Installing Windows payloads
+```
+All this does is copy the generated `.dll`'s to `metasploit-framework/data/meterpreter`
+
+Once the dlls are in place, you should get a warning about using local payloads when you generate a session:
+```
+WARNING: Local file /home/dwelch/dev/metasploit-framework/data/meterpreter/metsrv.x64.dll is being used
+WARNING: Local files may be incompatible with the Metasploit Framework
+```
+
+Once that is in place, run debugView as admin on the machine running the payload. Be sure to select "Global_Win32" messages in the "Capture" dropdown box.

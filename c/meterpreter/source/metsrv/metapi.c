@@ -39,6 +39,7 @@ MetApi api_instance = {
 		packet_get_tlv_value_qword,
 		packet_get_tlv_meta,
 		packet_get_tlv_value_uint,
+		packet_get_tlv_uint,
 		packet_destroy,
 		packet_get_tlv_value_wstring,
 		packet_get_tlv_value_reflective_loader,
@@ -146,6 +147,13 @@ MetApi api_instance = {
 		list_shift,
 		list_destroy,
 	},
+#ifdef DEBUGTRACE
+		// LoggingApi
+	{
+		get_logging_context,
+		get_lock,
+	},
+#endif
 };
 
 MetApi* met_api = &api_instance;

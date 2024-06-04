@@ -35,17 +35,17 @@ Command customCommands[] =
 DWORD InitServerExtension(MetApi* api, Remote* remote)
 {
 	met_api = api;
+	SET_LOGGING_CONTEXT(api)
 
 	gRemote = remote;
 
-	DWORD result = initialize_dotnet_host();
-
-	if (result == ERROR_SUCCESS)
+	HRESULT hresult = initialize_dotnet_host();
+	if (hresult == S_OK)
 	{
 		met_api->command.register_all(customCommands);
 	}
 
-	return result;
+	return (DWORD)hresult;
 }
 
 /*!

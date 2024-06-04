@@ -7,6 +7,11 @@
 
 typedef NTSTATUS(WINAPI *PRtlGetVersion)(LPOSVERSIONINFOEXW);
 
+// This may not be defined on some older systems in the header files, so lets define it here manually.
+#ifndef SE_DELEGATE_SESSION_USER_IMPERSONATE_NAME
+#define SE_DELEGATE_SESSION_USER_IMPERSONATE_NAME TEXT("SeDelegateSessionUserImpersonatePrivilege")
+#endif
+
 /*!
  * @brief Add an environment variable / value pair to a response packet.
  * @param response The \c Response packet to add the values to.
@@ -88,16 +93,23 @@ DWORD request_sys_config_getenv(Remote *remote, Packet *packet)
 			// grab the value of the variable and stick it in the response.
 			PWCHAR name = met_api->string.utf8_to_wchar(pEnvVarStart);
 			//Ensure we always have > 0 bytes even if env var doesn't exist
-			DWORD envlen = GetEnvironmentVariableW(name, NULL, 0) + 1;
-			PWCHAR wvalue = (PWCHAR)malloc(envlen * sizeof(WCHAR));
-			GetEnvironmentVariableW(name, wvalue, envlen);
-			free(name);
-			char* value = met_api->string.wchar_to_utf8(wvalue);
-			free(wvalue);
-			add_env_pair(response, pEnvVarStart, value);
-			free(value);
+			DWORD envlen = GetEnvironmentVariableW(name, NULL, 0);
+			if (envlen == 0)
 
-			dprintf("[ENV] Env var added");
+			{
+				dprintf("[ENV] Env var not found");
+			}
+			else 
+			{
+				PWCHAR wvalue = (PWCHAR)malloc(envlen * sizeof(WCHAR));
+				GetEnvironmentVariableW(name, wvalue, envlen);
+				char* value = met_api->string.wchar_to_utf8(wvalue);
+				add_env_pair(response, pEnvVarStart, value);
+				free(wvalue);
+				free(value);
+				dprintf("[ENV] Env var added");
+			}
+			free(name);
 		}
 	} while (0);
 
@@ -270,6 +282,39 @@ DWORD request_sys_config_drop_token(Remote* pRemote, Packet* pPacket)
 }
 
 /*
+ * @brief Updates an existing thread token.
+ * @param pRemote Pointer to the \c Remote instance.
+ * @param pRequest Pointer to the \c Request packet.
+ * @returns Indication of success or failure.
+ */
+DWORD request_sys_config_update_token(Remote* pRemote, Packet* pPacket)
+{
+	Packet* pResponse = met_api->packet.create_response(pPacket);
+	DWORD dwResult = ERROR_SUCCESS;
+	HANDLE hToken = NULL;
+
+	// Get token handle from the client
+	hToken = (HANDLE)met_api->packet.get_tlv_value_qword(pPacket, TLV_TYPE_HANDLE);
+
+	// Impersonate token in the current thread
+	if (!ImpersonateLoggedOnUser(hToken))
+	{
+		dwResult = GetLastError();
+		dprintf("[UPDATE-TOKEN] Failed to impersonate token (%u)", dwResult);
+		met_api->packet.transmit_response(dwResult, pRemote, pResponse);
+		return dwResult;
+	}
+
+	// Store the token handle for future tasks
+	met_api->thread.update_token(pRemote, hToken);
+
+	// Empty response means success
+	met_api->packet.transmit_response(dwResult, pRemote, pResponse);
+
+	return dwResult;
+}
+
+/*
  * sys_getprivs
  * ----------
  *
@@ -294,6 +339,7 @@ DWORD request_sys_config_getprivs(Remote *remote, Packet *packet)
 		SE_CREATE_SYMBOLIC_LINK_NAME,
 		SE_CREATE_TOKEN_NAME,
 		SE_DEBUG_NAME,
+		SE_DELEGATE_SESSION_USER_IMPERSONATE_NAME,
 		SE_ENABLE_DELEGATION_NAME,
 		SE_IMPERSONATE_NAME,
 		SE_INC_BASE_PRIORITY_NAME,
@@ -510,7 +556,7 @@ DWORD add_windows_os_version(Packet** packet)
 		{
 			if (v.dwMinorVersion == 0)
 			{
-				osName = "Windows 2000";
+				osName = v.wProductType == VER_NT_WORKSTATION ? "Windows 2000" : "Windows Server 2000";
 			}
 			else if (v.dwMinorVersion == 1)
 			{
@@ -518,33 +564,41 @@ DWORD add_windows_os_version(Packet** packet)
 			}
 			else if (v.dwMinorVersion == 2)
 			{
-				osName = "Windows .NET Server";
+				osName = "Windows Server 2003";
 			}
 		}
 		else if (v.dwMajorVersion == 6)
 		{
 			if (v.dwMinorVersion == 0)
 			{
-				osName = v.wProductType == VER_NT_WORKSTATION ? "Windows Vista" : "Windows 2008";
+				osName = v.wProductType == VER_NT_WORKSTATION ? "Windows Vista" : "Windows Server 2008";
 			}
 			else if (v.dwMinorVersion == 1)
 			{
-				osName = v.wProductType == VER_NT_WORKSTATION ? "Windows 7" : "Windows 2008 R2";
+				osName = v.wProductType == VER_NT_WORKSTATION ? "Windows 7" : "Windows Server 2008 R2";
 			}
 			else if (v.dwMinorVersion == 2)
 			{
-				osName = v.wProductType == VER_NT_WORKSTATION ? "Windows 8" : "Windows 2012";
+				osName = v.wProductType == VER_NT_WORKSTATION ? "Windows 8" : "Windows Server 2012";
 			}
 			else if (v.dwMinorVersion == 3)
 			{
-				osName = v.wProductType == VER_NT_WORKSTATION ? "Windows 8.1" : "Windows 2012 R2";
+				osName = v.wProductType == VER_NT_WORKSTATION ? "Windows 8.1" : "Windows Server 2012 R2";
 			}
 		}
 		else if (v.dwMajorVersion == 10)
 		{
 			if (v.dwMinorVersion == 0)
 			{
-				osName = v.wProductType == VER_NT_WORKSTATION ? "Windows 10" : "Windows 2016+";
+				if (v.dwBuildNumber < 17763) {
+					osName = v.wProductType == VER_NT_WORKSTATION ? "Windows 10" : "Windows Server 2016";
+				} else if (v.dwBuildNumber < 20348) {
+					osName = v.wProductType == VER_NT_WORKSTATION ? "Windows 10" : "Windows Server 2019";
+				} else if (v.dwBuildNumber < 22000) {
+					osName = v.wProductType == VER_NT_WORKSTATION ? "Windows 10" : "Windows Server 2022";
+				} else {
+					osName = v.wProductType == VER_NT_WORKSTATION ? "Windows 11" : "Windows Server 2022";
+				}
 			}
 		}
 

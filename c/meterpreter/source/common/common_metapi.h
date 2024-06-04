@@ -7,7 +7,7 @@
 
 typedef struct _InjectApi
 {
-	DWORD(*dll)(DWORD dwPid, LPVOID lpDllBuffer, DWORD dwDllLength, LPCSTR reflectiveLoader, char* cpCommandLine);
+	DWORD(*dll)(DWORD dwPid, DWORD dwDestinationArch, LPVOID lpDllBuffer, DWORD dwDllLength, LPCSTR reflectiveLoader, LPVOID lpArg, SIZE_T stArgSize);
 	DWORD(*via_apcthread)(Remote* remote, Packet* response, HANDLE hProcess, DWORD dwProcessID, DWORD dwDestinationArch, LPVOID lpStartAddress, LPVOID lpParameter);
 	DWORD(*via_remotethread)(Remote* remote, Packet* response, HANDLE hProcess, DWORD dwDestinationArch, LPVOID lpStartAddress, LPVOID lpParameter);
 	DWORD(*via_remotethread_wow64)(HANDLE hProcess, LPVOID lpStartAddress, LPVOID lpParameter, HANDLE* pThread);
@@ -124,6 +124,7 @@ typedef struct _PacketApi
 	QWORD(*get_tlv_value_qword)(Packet* packet, TlvType type);
 	TlvMetaType(*get_tlv_meta)(Packet* packet, Tlv* tlv);
 	UINT(*get_tlv_value_uint)(Packet* packet, TlvType type);
+	BOOL(*get_tlv_uint)(Packet* packet, TlvType type, UINT* output);
 	VOID(*destroy)(Packet* packet);
 	wchar_t*(*get_tlv_value_wstring)(Packet* packet, TlvType type);
 	LPCSTR(*get_tlv_value_reflective_loader)(Packet* packet);
@@ -158,6 +159,13 @@ typedef struct _ListApi
 	VOID(*destroy)(PLIST pList);
 } ListApi;
 
+#ifdef DEBUGTRACE
+typedef struct _LoggingApi
+{
+	HANDLE(*get_logging_context)();
+	HANDLE(*get_lock)();
+} LoggingApi;
+#endif
 typedef struct _MetApi
 {
     PacketApi packet;
@@ -171,6 +179,9 @@ typedef struct _MetApi
 	InjectApi inject;
 	DesktopApi desktop;
 	ListApi list;
+#ifdef DEBUGTRACE
+	LoggingApi logging;
+#endif
 } MetApi;
 
 extern MetApi* met_api;

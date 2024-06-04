@@ -18,11 +18,12 @@ public class stdapi_fs_ls implements Command {
         if (pathString.contains("*")) {
             String root = path.getParent();
             String match = path.getName();
-            List entries = stdapi_fs_search.findFiles(root, match, false);
+            List entries = stdapi_fs_search.findFiles(root, match, false, null, null);
             for (int i = 0; i < entries.size(); i++) {
                 String entry = entries.get(i).toString();
-                if (entry.equals(".") || entry.equals(".."))
+                if (entry.equals(".") || entry.equals("..")) {
                     continue;
+                }
                 File f = new File(entry);
                 String pathEntry = entry;
                 if (pathEntry.startsWith(root)) {
@@ -36,8 +37,9 @@ public class stdapi_fs_ls implements Command {
         }
         String[] entries = path.list();
         for (int i = 0; i < entries.length; i++) {
-            if (entries[i].equals(".") || entries[i].equals(".."))
+            if (entries[i].equals(".") || entries[i].equals("..")) {
                 continue;
+            }
             File f = new File(path, entries[i]);
             response.addOverflow(TLVType.TLV_TYPE_FILE_NAME, entries[i]);
             response.addOverflow(TLVType.TLV_TYPE_FILE_PATH, f.getCanonicalPath());

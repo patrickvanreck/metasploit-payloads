@@ -21,13 +21,15 @@ define("TLV_TYPE_FILE_MODE",           TLV_META_TYPE_STRING  | 1203);
 define("TLV_TYPE_FILE_SIZE",           TLV_META_TYPE_UINT    | 1204);
 define("TLV_TYPE_FILE_HASH",           TLV_META_TYPE_RAW     | 1206);
 
-define("TLV_TYPE_STAT_BUF32",          TLV_META_TYPE_COMPLEX | 1220);
+define("TLV_TYPE_STAT_BUF",            TLV_META_TYPE_COMPLEX | 1221);
 
 define("TLV_TYPE_SEARCH_RECURSE",      TLV_META_TYPE_BOOL    | 1230);
 define("TLV_TYPE_SEARCH_GLOB",         TLV_META_TYPE_STRING  | 1231);
 define("TLV_TYPE_SEARCH_ROOT",         TLV_META_TYPE_STRING  | 1232);
 define("TLV_TYPE_SEARCH_RESULTS",      TLV_META_TYPE_GROUP   | 1233);
-
+define("TLV_TYPE_SEARCH_MTIME",        TLV_META_TYPE_UINT    | 1235);
+define("TLV_TYPE_SEARCH_M_START_DATE", TLV_META_TYPE_UINT    | 1236);
+define("TLV_TYPE_SEARCH_M_END_DATE",   TLV_META_TYPE_UINT    | 1237);
 define("TLV_TYPE_FILE_MODE_T",         TLV_META_TYPE_UINT    | 1234);
 
 ##
@@ -49,6 +51,8 @@ define("TLV_TYPE_NETWORK_INTERFACE",   TLV_META_TYPE_GROUP   | 1433);
 define("TLV_TYPE_SUBNET_STRING",       TLV_META_TYPE_STRING  | 1440);
 define("TLV_TYPE_NETMASK_STRING",      TLV_META_TYPE_STRING  | 1441);
 define("TLV_TYPE_GATEWAY_STRING",      TLV_META_TYPE_STRING  | 1442);
+define("TLV_TYPE_ROUTE_METRIC",        TLV_META_TYPE_UINT    | 1443);
+define("TLV_TYPE_ADDR_TYPE",           TLV_META_TYPE_UINT    | 1444);
 
 # Socket
 define("TLV_TYPE_PEER_HOST",           TLV_META_TYPE_STRING  | 1500);
@@ -298,6 +302,7 @@ define("ERROR_CONNECTION_ERROR", 10000);
 # eval'd twice
 my_print("Evaling stdapi");
 
+
 ##
 # Search Helpers
 ##
@@ -332,7 +337,7 @@ define('GLOB_RECURSE',2048);
  *   GLOB_NODOTS, GLOB_RECURSE
  */
 if (!function_exists('safe_glob')) {
-function safe_glob($pattern, $flags=0) {
+function safe_glob($pattern, $flags=0, $start_date=null, $end_date=null) {
     $split=explode('/',str_replace('\\','/',$pattern));
     $mask=array_pop($split);
     $path=implode('/',$split);
@@ -348,14 +353,21 @@ function safe_glob($pattern, $flags=0) {
                     && (!is_link($path."/".$file))
                 )
             ) {
-                $glob = array_merge($glob, array_prepend(safe_glob($path.'/'.$file.'/'.$mask, $flags),
-                    ($flags&GLOB_PATH?'':$file.'/')));
+                $newglob = safe_glob($path.'/'.$file.'/'.$mask, $flags, $start_date, $end_date);
+                if ($newglob !== false) {
+                    $glob = array_merge($glob, array_prepend($newglob,
+                        ($flags&GLOB_PATH?'':$file.'/')));
+                }
             }
             // Match file mask
             if (fnmatch($mask,$file)) {
+                $tmp_f_stat = stat($path.'/'.$file);
+                $mtime = $tmp_f_stat['mtime'];
                 if ( ( (!($flags&GLOB_ONLYDIR)) || is_dir("$path/$file") )
                     && ( (!($flags&GLOB_NODIR)) || (!is_dir($path.'/'.$file)) )
-                    && ( (!($flags&GLOB_NODOTS)) || (!in_array($file,array('.','..'))) ) )
+                    && ( (!($flags&GLOB_NODOTS)) || (!in_array($file,array('.','..'))) )
+                    && ( ($start_date === null) || ($start_date <= $mtime))
+                    && ( ($end_date === null) || ($end_date >= $mtime)) )
                     $glob[] = ($flags&GLOB_PATH?$path.'/':'') . $file . ($flags&GLOB_MARK?'/':'');
             }
         }
@@ -417,22 +429,91 @@ function add_stat_buf($path) {
     if ($st) {
         $st_buf = "";
         $st_buf .= pack("V", $st['dev']);
-        $st_buf .= pack("v", $st['ino']);
-        $st_buf .= pack("v", $st['mode']);
-        $st_buf .= pack("v", 0);
-        $st_buf .= pack("v", $st['nlink']);
-        $st_buf .= pack("v", $st['uid']);
-        $st_buf .= pack("v", $st['gid']);
+        $st_buf .= pack("V", $st['mode']);
+        $st_buf .= pack("V", $st['nlink']);
+        $st_buf .= pack("V", $st['uid']);
+        $st_buf .= pack("V", $st['gid']);
         $st_buf .= pack("V", $st['rdev']);
-        $st_buf .= pack("V", $st['size']);
-        $st_buf .= pack("V", $st['ctime']);
-        $st_buf .= pack("V", $st['atime']);
-        $st_buf .= pack("V", $st['mtime']);
+
+        $st_buf .= pack_p($st['ino']);
+        $st_buf .= pack_p($st['size']);
+        $st_buf .= pack_p($st['atime']);
+        $st_buf .= pack_p($st['mtime']);
+        $st_buf .= pack_p($st['ctime']);
+        
         $st_buf .= pack("V", $st['blksize']);
         $st_buf .= pack("V", $st['blocks']);
-        return create_tlv(TLV_TYPE_STAT_BUF32, $st_buf);
+       
+        return create_tlv(TLV_TYPE_STAT_BUF, $st_buf);
     }
     return false;
+}
+}
+
+if(!function_exists('pack_p')) {
+# Implements pack('P', $value) - but backwards compatible to PHP4.x
+# https://www.php.net/manual/en/function.pack.php
+# Directive:
+#   P   unsigned long long (always 64 bit, little endian byte order)
+function pack_p($value) {
+    $first_half = pack('V', $value & 0xffffffff);
+    $second_half = pack('V', ($value >> 32) & 0xffffffff);
+
+    return $first_half . $second_half;
+}
+}
+
+if (!function_exists('resolve_host')) {
+function resolve_host($hostname, $family) {
+    /* requires PHP >= 5 */
+    if ($family == WIN_AF_INET) {
+        $dns_family = DNS_A;
+    } elseif ($family == WIN_AF_INET6) {
+        $dns_family = DNS_AAAA;
+    } else {
+        my_print('invalid family, must be AF_INET or AF_INET6');
+        return NULL;
+    }
+
+    $dns = dns_get_record($hostname, $dns_family);
+    if (empty($dns)) {
+        return NULL;
+    }
+
+    $result = array("family" => $family);
+    $record = $dns[0];
+    if ($record["type"] == "A") {
+        $result["address"] = $record["ip"];
+    }
+    if ($record["type"] == "AAAA") {
+        $result["address"] = $record["ipv6"];
+    }
+    $result["packed_address"] = inet_pton($result["address"]);
+    return $result;
+}
+}
+
+if (!function_exists('rmtree')) {
+function rmtree($path) {
+    $dents = safe_glob($path . '/*');
+    foreach ($dents as $dent) {
+        if (in_array($dent, array('.','..'))) {
+            continue;
+        }
+
+        $subpath = $path . DIRECTORY_SEPARATOR . $dent;
+        if (@is_link($subpath)) {
+            $ret = unlink($subpath);
+        } elseif (@is_dir($subpath)) {
+            $ret = rmtree($subpath);
+        } else {
+            $ret = @unlink($subpath);
+        }
+        if (!$ret) {
+            return false;
+        }
+    }
+    return @rmdir($path);
 }
 }
 
@@ -486,7 +567,14 @@ register_command('stdapi_fs_delete_dir', COMMAND_ID_STDAPI_FS_DELETE_DIR);
 function stdapi_fs_delete_dir($req, &$pkt) {
     my_print("doing rmdir");
     $path_tlv = packet_get_tlv($req, TLV_TYPE_DIRECTORY_PATH);
-    $ret = @rmdir(canonicalize_path($path_tlv['value']));
+    $path = canonicalize_path($path_tlv['value']);
+
+    $ret = false;
+    if (@is_link($path)) {
+        $ret = @unlink($path);
+    } elseif (@is_dir($path)) {
+        $ret = rmtree($path);
+    }
     return $ret ? ERROR_SUCCESS : ERROR_FAILURE;
 }
 }
@@ -581,8 +669,10 @@ function stdapi_fs_ls($req, &$pkt) {
                 packet_add_tlv($pkt, create_tlv(TLV_TYPE_FILE_NAME, $file));
                 packet_add_tlv($pkt, create_tlv(TLV_TYPE_FILE_PATH, $path . DIRECTORY_SEPARATOR . $file));
                 $st_buf = add_stat_buf($path . DIRECTORY_SEPARATOR . $file);
-                if ($st_buf)
-                    packet_add_tlv($pkt, $st_buf);
+                if (!$st_buf) {
+                    $st_buf = create_tlv(TLV_TYPE_STAT_BUF, '');
+                }
+                packet_add_tlv($pkt, $st_buf);
             }
         }
         closedir($dir_handle);
@@ -645,27 +735,38 @@ function stdapi_fs_search($req, &$pkt) {
     $glob = canonicalize_path($glob_tlv['value']);
     $recurse_tlv = packet_get_tlv($req, TLV_TYPE_SEARCH_RECURSE);
     $recurse = $recurse_tlv['value'];
+    $start_date_tlv = packet_get_tlv($req, TLV_TYPE_SEARCH_M_START_DATE);
+    $start_date = null;
+    if ($start_date_tlv) {
+        $start_date = $start_date_tlv['value'];
+    }
+    $end_date_tlv = packet_get_tlv($req, TLV_TYPE_SEARCH_M_END_DATE);
+    $end_date = null;
+    if ($end_date_tlv) {
+        $end_date = $end_date_tlv['value'];
+    }
 
     if (!$root) {
         $root = '.';
     }
 
     my_print("glob: $glob, root: $root, recurse: $recurse");
-    $flags = GLOB_PATH;
+    $flags = GLOB_PATH | GLOB_NODOTS;
     if ($recurse) {
         $flags |= GLOB_RECURSE;
     }
-    $files = safe_glob($root ."/". $glob, $flags);
+    $files = safe_glob($root ."/". $glob, $flags, $start_date, $end_date);
     if ($files and is_array($files)) {
         dump_array($files);
         foreach ($files as $file) {
             $file_tlvs = "";
             $s = stat($file);
-            $p = dirname($file);
-            $f = basename($file);
+            $p = canonicalize_path(dirname($file));
+            $f = canonicalize_path(basename($file));
             $file_tlvs .= tlv_pack(create_tlv(TLV_TYPE_FILE_PATH, $p));
             $file_tlvs .= tlv_pack(create_tlv(TLV_TYPE_FILE_NAME, $f));
             $file_tlvs .= tlv_pack(create_tlv(TLV_TYPE_FILE_SIZE, $s['size']));
+            $file_tlvs .= tlv_pack(create_tlv(TLV_TYPE_SEARCH_MTIME, $s['mtime']));
             packet_add_tlv($pkt, create_tlv(TLV_TYPE_SEARCH_RESULTS, $file_tlvs));
         }
     }
@@ -719,12 +820,12 @@ function stdapi_sys_config_getuid($req, &$pkt) {
     if (is_callable('posix_getuid')) {
         $uid = posix_getuid();
         $pwinfo = posix_getpwuid($uid);
-        $user = $pwinfo['name'] . " ($uid)";
+        $user = $pwinfo['name'];
     } else {
         # The posix functions aren't available, this is probably windows.  Use
         # the functions for getting user name and uid based on file ownership
         # instead.
-        $user = get_current_user() . " (" . getmyuid() . ")";
+        $user = get_current_user();
     }
     my_print("getuid - returning: " . $user);
     packet_add_tlv($pkt, create_tlv(TLV_TYPE_USER_NAME, $user));
@@ -888,7 +989,9 @@ function close_process($proc) {
         # real harm in that, so go ahead and just always make sure they get
         # closed.
         foreach ($proc['pipes'] as $f) {
+          if (is_resource($f)) {
             @fclose($f);
+          }
         }
         if (is_callable('proc_get_status')) {
             $status = proc_get_status($proc['handle']);
@@ -961,7 +1064,7 @@ function stdapi_sys_process_get_processes($req, &$pkt) {
         # full command line
         array_shift($proc);
         array_shift($proc);
-        $grp .= tlv_pack(create_tlv(TLV_TYPE_PROCESS_PATH, join($proc, " ")));
+        $grp .= tlv_pack(create_tlv(TLV_TYPE_PROCESS_PATH, join(" ", $proc)));
         packet_add_tlv($pkt, create_tlv(TLV_TYPE_PROCESS_GROUP, $grp));
     }
     return ERROR_SUCCESS;
@@ -1163,7 +1266,58 @@ function stdapi_registry_set_value($req, &$pkt) {
 }
 }
 
+if (!function_exists('stdapi_net_resolve_host')) {
+register_command('stdapi_net_resolve_host', COMMAND_ID_STDAPI_NET_RESOLVE_HOST);
+function stdapi_net_resolve_host($req, &$pkt) {
+    my_print("doing stdapi_net_resolve_host");
+    $hostname_tlv = packet_get_tlv($req, TLV_TYPE_HOST_NAME);
+    $hostname = $hostname['value'];
+    $family_tlv = packet_get_tlv($req, TLV_TYPE_ADDR_TYPE);
+    $family = $family['value'];
 
+    if ($family != WIN_AF_INET && $family != WIN_AF_INET6) {
+        my_print('invalid family, must be AF_INET or AF_INET6');
+        return ERROR_FAILURE;
+    }
+
+    $ret = ERROR_FAILURE;
+    $result = resolve_host($hostname, $family);
+    if ($result != NULL) {
+        $ret = ERROR_SUCCESS;
+        packet_add_tlv($pkt, create_tlv(TLV_TYPE_IP, $result['packed_address']));
+        packet_add_tlv($pkt, create_tlv(TLV_TYPE_ADDR_TYPE, $result['family']));
+    }
+    return $ret;
+}
+}
+
+if (!function_exists('stdapi_net_resolve_hosts')) {
+register_command('stdapi_net_resolve_hosts', COMMAND_ID_STDAPI_NET_RESOLVE_HOSTS);
+function stdapi_net_resolve_hosts($req, &$pkt) {
+    my_print("doing stdapi_net_resolve_hosts");
+    $family_tlv = packet_get_tlv($req, TLV_TYPE_ADDR_TYPE);
+    $family = $family_tlv['value'];
+
+    if ($family != WIN_AF_INET && $family != WIN_AF_INET6) {
+        my_print('invalid family, must be AF_INET or AF_INET6');
+        return ERROR_FAILURE;
+    }
+
+    $hostname_tlvs = packet_get_all_tlvs($req, TLV_TYPE_HOST_NAME);
+    foreach ($hostname_tlvs as $hostname_tlv) {
+        $hostname = $hostname_tlv['value'];
+        $result = resolve_host($hostname, $family);
+        if ($result == NULL) {
+            packet_add_tlv($pkt, create_tlv(TLV_TYPE_IP, ''));
+            packet_add_tlv($pkt, create_tlv(TLV_TYPE_ADDR_TYPE, $family));
+        } else {
+            packet_add_tlv($pkt, create_tlv(TLV_TYPE_IP, $result['packed_address']));
+            packet_add_tlv($pkt, create_tlv(TLV_TYPE_ADDR_TYPE, $result['family']));
+        }
+    }
+    return ERROR_SUCCESS;
+}
+}
 # END STDAPI
 
 
@@ -1262,7 +1416,3 @@ function channel_create_stdapi_net_udp_client($req, &$pkt) {
     return ERROR_SUCCESS;
 }
 }
-
-
-
-
